@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "Wayfarer",
+    "slug": "wayfarer",
+    "scheme": "wayfarer",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.nirmalhk7.wayfarer",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "RECEIVE_BOOT_COMPLETED"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#050B0A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "./plugins/withGradleTestCompatibility.cjs",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Wayfarer uses your location to generate nearby starports and verify docking.",
+          "locationAlwaysAndWhenInUsePermission": "Wayfarer uses your location to verify docking while you approach your selected starport.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "androidForegroundServiceIcon": "./assets/android-icon-monochrome.png"
+        }
+      ]
+    ]
+  }
+}

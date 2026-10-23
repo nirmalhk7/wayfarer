@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir, stat } from "node:fs/promises";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 
 const templateRoot = new URL("../", import.meta.url);
 
@@ -57,4 +58,57 @@ test("removes starter-only assets and metadata", async () => {
   await assert.rejects(
     access(new URL("public/_sites-preview", templateRoot)),
   );
+});
+
+async function filesUnder(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map((entry) => {
+    const url = new URL(`${entry.name}${entry.isDirectory() ? "/" : ""}`, directory);
+    return entry.isDirectory() ? filesUnder(url) : [url];
+  }));
+  return nested.flat();
+}
+
+function jpegDimensions(bytes) {
+  let offset = 2;
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) break;
+    const marker = bytes[offset + 1];
+    const length = bytes.readUInt16BE(offset + 2);
+    if (marker >= 0xc0 && marker <= 0xc3) {
+      return { height: bytes.readUInt16BE(offset + 5), width: bytes.readUInt16BE(offset + 7) };
+    }
+    offset += 2 + length;
+  }
+  throw new Error("No JPEG dimensions found");
+}
+
+test("keeps the sole-route payload and social preview within performance budgets", async () => {
+  const staticFiles = await filesUnder(new URL("../dist/client/_next/static/", import.meta.url));
+  const javascript = await Promise.all(
+    staticFiles.filter((url) => url.pathname.endsWith(".js")).map((url) => readFile(url)),
+  );
+  const css = await Promise.all(
+    staticFiles.filter((url) => url.pathname.endsWith(".css")).map((url) => readFile(url)),
+  );
+  const javascriptGzipBytes = javascript.reduce((total, bytes) => total + gzipSync(bytes).byteLength, 0);
+  const cssGzipBytes = css.reduce((total, bytes) => total + gzipSync(bytes).byteLength, 0);
+  assert.ok(javascriptGzipBytes <= 200 * 1024, `initial JS is ${javascriptGzipBytes} gzip bytes`);
+  assert.ok(cssGzipBytes <= 50 * 1024, `initial CSS is ${cssGzipBytes} gzip bytes`);
+
+  const ogUrl = new URL("../public/og.jpg", import.meta.url);
+  await assert.doesNotReject(access(ogUrl), "optimized Open Graph JPEG must exist");
+  const [layout, ogBytes, ogStat] = await Promise.all([
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(ogUrl),
+    stat(ogUrl),
+  ]);
+  assert.ok(ogStat.size <= 300 * 1024, `Open Graph image is ${ogStat.size} bytes`);
+  assert.deepEqual(jpegDimensions(ogBytes), { width: 1200, height: 630 });
+  assert.match(layout, /images: \[\{ url: "\/og\.jpg", width: 1200, height: 630 \}\]/);
+  assert.match(layout, /images: \["\/og\.jpg"\]/);
+
+  for (const asset of ["og.png", "file.svg", "globe.svg", "window.svg"]) {
+    await assert.rejects(access(new URL(`../public/${asset}`, import.meta.url)));
+  }
 });

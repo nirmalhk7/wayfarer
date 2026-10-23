@@ -1,4 +1,4 @@
-# vinext-starter
+# Wayfarer
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
@@ -91,8 +91,25 @@ actions tied to the current ChatGPT user. Leave public content anonymous.
 
 - `npm run dev`: start local development
 - `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
+- `npm test`: run game/RUM tests, build, verify rendered output, and enforce payload budgets
 - `npm run db:generate`: generate Drizzle migrations after schema changes
+
+## Performance Monitoring
+
+The client records LCP, INP, and CLS with `web-vitals`. Every measurement emits
+a `wayfarer:web-vital` browser event. Set `NEXT_PUBLIC_WEB_VITALS_ENDPOINT` to
+also send the bounded metric payload with `navigator.sendBeacon`; raw performance
+entries and query strings are not sent.
+
+The post-build test gate caps the sole route at 200 KiB gzip JavaScript, 50 KiB
+gzip CSS, and a 300 KiB 1200×630 social preview.
+
+## Worker Image Compatibility
+
+The current app does not call `next/image` or `/_vinext/image`. The Vinext image
+optimization branch remains intentionally available for deployment compatibility
+and any externally bookmarked optimizer URLs. Check production request logs before
+removing that endpoint.
 
 ## Learn More
 

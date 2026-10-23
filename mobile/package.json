@@ -1,0 +1,46 @@
+{
+  "name": "wayfarer-mobile",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~57.0.12",
+    "expo-haptics": "~57.0.1",
+    "expo-location": "~57.0.9",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.2",
+    "expo-task-manager": "~57.0.9",
+    "react": "19.2.3",
+    "react-native": "0.86.2"
+  },
+  "devDependencies": {
+    "@testing-library/react-native": "^14.0.1",
+    "@types/jest": "29.5.14",
+    "@types/node": "^26.2.0",
+    "@types/react": "~19.2.2",
+    "jest": "~29.7.0",
+    "jest-expo": "~57.0.4",
+    "tsx": "^4.23.12",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "android:release": "cd android && ./gradlew assembleRelease",
+    "check": "npm run typecheck && npm test",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "test": "npm run test:pure && npm run test:ui",
+    "test:pure": "node --import tsx --test tests/*.test.ts",
+    "test:ui": "jest --runInBand --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.tsx"
+    ]
+  },
+  "private": true
+}

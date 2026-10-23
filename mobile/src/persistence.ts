@@ -1,0 +1,382 @@
+import {
+  COMMODITIES,
+  createGame,
+  isDockingProofId,
+  MAX_DOCKING_PROOF_HISTORY,
+  type Coordinates,
+  type Encounter,
+  type GameState,
+  type MarketQuote,
+  type PlayerState,
+  type Starport,
+} from "./game/engine.ts";
+
+export const LIVE_STORAGE_KEY = "wayfarer.mobile.live.save.v2";
+export const TRAINING_STORAGE_KEY = "wayfarer.mobile.training.save.v2";
+export const LEGACY_STORAGE_KEY = "wayfarer.mobile.save.v1";
+
+export type CampaignMode = "live" | "training";
+
+type UnknownRecord = Record<string, unknown>;
+
+const COMMODITY_IDS = new Set(COMMODITIES.map((commodity) => commodity.id));
+const MAX_DOCKING_PROOF_ID_LENGTH = 96;
+const MAX_SAVE_LENGTH = 256 * 1024;
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function readCoordinates(value: unknown): Coordinates | null {
+  if (!isRecord(value)) return null;
+  const { latitude, longitude } = value;
+  if (
+    typeof latitude !== "number"
+    || !Number.isFinite(latitude)
+    || latitude < -90
+    || latitude > 90
+    || typeof longitude !== "number"
+    || !Number.isFinite(longitude)
+    || longitude < -180
+    || longitude > 180
+  ) {
+    return null;
+  }
+  return { latitude, longitude };
+}
+
+function readMarketQuote(value: unknown): MarketQuote | null {
+  if (!isRecord(value)) return null;
+  const { commodityId, stock, ask, bid } = value;
+  if (
+    !isNonEmptyString(commodityId)
+    || !COMMODITY_IDS.has(commodityId)
+    || !isNonNegativeInteger(stock)
+    || !isPositiveInteger(ask)
+    || !isPositiveInteger(bid)
+    || bid !== Math.max(1, Math.floor(ask * 0.76))
+  ) {
+    return null;
+  }
+  return { commodityId, stock, ask, bid };
+}
+
+function readMarket(value: unknown): MarketQuote[] | null {
+  if (!Array.isArray(value) || value.length !== COMMODITIES.length) return null;
+  const quotes: MarketQuote[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    const quote = readMarketQuote(candidate);
+    if (!quote || seen.has(quote.commodityId)) return null;
+    seen.add(quote.commodityId);
+    quotes.push(quote);
+  }
+  if (COMMODITIES.some((commodity) => !seen.has(commodity.id))) return null;
+  return quotes;
+}
+
+function readPort(value: unknown): Starport | null {
+  if (!isRecord(value)) return null;
+  const { id, name, callsign } = value;
+  const position = readCoordinates(value.position);
+  const market = readMarket(value.market);
+  if (!isNonEmptyString(id) || !isNonEmptyString(name) || !isNonEmptyString(callsign) || !position || !market) {
+    return null;
+  }
+  return { id, name, callsign, position, market };
+}
+
+function readCargo(value: unknown, capacity: number): Record<string, number> | null {
+  if (!isRecord(value)) return null;
+  const cargo: Record<string, number> = {};
+  let units = 0;
+  for (const [commodityId, quantity] of Object.entries(value)) {
+    if (!COMMODITY_IDS.has(commodityId) || !isPositiveInteger(quantity)) return null;
+    units += quantity;
+    if (!Number.isSafeInteger(units) || units > capacity) return null;
+    cargo[commodityId] = quantity;
+  }
+  return cargo;
+}
+
+function readPlayer(value: unknown): PlayerState | null {
+  if (!isRecord(value)) return null;
+  const { credits, cargoCapacity, hull, maxHull } = value;
+  if (
+    !isNonNegativeInteger(credits)
+    || !isPositiveInteger(cargoCapacity)
+    || cargoCapacity < 8
+    || (cargoCapacity - 8) % 4 !== 0
+    || !isPositiveInteger(hull)
+    || !isPositiveInteger(maxHull)
+    || maxHull < 3
+    || hull > maxHull
+  ) {
+    return null;
+  }
+  const cargo = readCargo(value.cargo, cargoCapacity);
+  if (!cargo) return null;
+  return { credits, cargoCapacity, cargo, hull, maxHull };
+}
+
+function readPortIds(value: unknown, knownPortIds: ReadonlySet<string>): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (typeof candidate !== "string" || !knownPortIds.has(candidate) || seen.has(candidate)) return null;
+    seen.add(candidate);
+    ids.push(candidate);
+  }
+  return ids;
+}
+
+function readDockingProofIds(value: unknown, knownPortIds: ReadonlySet<string>): string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_DOCKING_PROOF_HISTORY) return null;
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    let validPort = false;
+    if (isNonEmptyString(candidate) && candidate.length <= MAX_DOCKING_PROOF_ID_LENGTH) {
+      for (const portId of knownPortIds) {
+        if (isDockingProofId(candidate, portId)) {
+          validPort = true;
+          break;
+        }
+      }
+    }
+    if (
+      !isNonEmptyString(candidate)
+      || candidate.length > MAX_DOCKING_PROOF_ID_LENGTH
+      || seen.has(candidate)
+      || !validPort
+    ) {
+      return null;
+    }
+    seen.add(candidate);
+    ids.push(candidate);
+  }
+  return ids;
+}
+
+function readEncounter(value: unknown, knownPortIds: ReadonlySet<string>): Encounter | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  const { type, severity, portId } = value;
+  if (
+    (type !== "pirates" && type !== "customs" && type !== "distress")
+    || !isPositiveInteger(severity)
+    || severity > 3
+    || typeof portId !== "string"
+    || !knownPortIds.has(portId)
+  ) {
+    return undefined;
+  }
+  return { type, severity, portId };
+}
+
+function readGameState(value: unknown): GameState | null {
+  if (!isRecord(value) || value.version !== 1 || !isNonEmptyString(value.seed)) return null;
+  const origin = readCoordinates(value.origin);
+  if (!origin || !Array.isArray(value.ports) || value.ports.length === 0) return null;
+
+  const ports: Starport[] = [];
+  const portIds = new Set<string>();
+  for (const candidate of value.ports) {
+    const port = readPort(candidate);
+    if (!port || portIds.has(port.id)) return null;
+    portIds.add(port.id);
+    ports.push(port);
+  }
+
+  let base: GameState;
+  try {
+    base = createGame({ origin, seed: value.seed });
+  } catch {
+    return null;
+  }
+  if (ports.length !== base.ports.length) return null;
+  for (let index = 0; index < ports.length; index += 1) {
+    const port = ports[index];
+    const expected = base.ports[index];
+    if (
+      port.id !== expected.id
+      || port.name !== expected.name
+      || port.callsign !== expected.callsign
+      || port.position.latitude !== expected.position.latitude
+      || port.position.longitude !== expected.position.longitude
+    ) {
+      return null;
+    }
+  }
+
+  const dockedPortId = value.dockedPortId;
+  if (dockedPortId !== null && (typeof dockedPortId !== "string" || !portIds.has(dockedPortId))) return null;
+  const discoveredPortIds = readPortIds(value.discoveredPortIds, portIds);
+  const revealedMarketIds = readPortIds(value.revealedMarketIds, portIds);
+  const consumedDockingProofIds = readDockingProofIds(value.consumedDockingProofIds, portIds);
+  const dockSequence = value.dockSequence;
+  const encounter = readEncounter(value.encounter, portIds);
+  const player = readPlayer(value.player);
+  if (
+    !discoveredPortIds
+    || !revealedMarketIds
+    || !consumedDockingProofIds
+    || !isNonNegativeInteger(dockSequence)
+    || dockSequence !== consumedDockingProofIds.length
+    || encounter === undefined
+    || !player
+  ) {
+    return null;
+  }
+  if (revealedMarketIds.some((id) => !discoveredPortIds.includes(id))) return null;
+  if (!discoveredPortIds.includes(base.ports[0].id) || !revealedMarketIds.includes(base.ports[0].id)) return null;
+  if (
+    dockedPortId !== null
+    && (!discoveredPortIds.includes(dockedPortId) || !revealedMarketIds.includes(dockedPortId))
+  ) {
+    return null;
+  }
+  if (encounter && encounter.portId !== dockedPortId) return null;
+
+  return {
+    version: 1,
+    seed: value.seed,
+    origin,
+    ports,
+    dockedPortId,
+    discoveredPortIds,
+    revealedMarketIds,
+    consumedDockingProofIds,
+    dockSequence,
+    encounter,
+    player,
+  };
+}
+
+function validUpgradeCapacity(value: unknown): value is number {
+  return isPositiveInteger(value) && value >= 8 && (value - 8) % 4 === 0;
+}
+
+function migrateCargo(value: unknown, capacity: number): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const cargo: Record<string, number> = {};
+  let units = 0;
+  for (const commodity of COMMODITIES) {
+    const quantity = value[commodity.id];
+    if (!isPositiveInteger(quantity)) continue;
+    units += quantity;
+    if (!Number.isSafeInteger(units) || units > capacity) return {};
+    cargo[commodity.id] = quantity;
+  }
+  return cargo;
+}
+
+function migrateMarket(baseMarket: MarketQuote[], value: unknown): MarketQuote[] {
+  if (!Array.isArray(value)) return baseMarket;
+  const validQuotes = new Map<string, MarketQuote>();
+  for (const candidate of value) {
+    const quote = readMarketQuote(candidate);
+    if (quote && !validQuotes.has(quote.commodityId)) validQuotes.set(quote.commodityId, quote);
+  }
+  return baseMarket.map((quote) => validQuotes.get(quote.commodityId) ?? quote);
+}
+
+function migratePortIds(value: unknown, baseId: string, knownPortIds: ReadonlySet<string>): string[] {
+  const result = [baseId];
+  if (!Array.isArray(value)) return result;
+  for (const candidate of value) {
+    if (typeof candidate === "string" && knownPortIds.has(candidate) && !result.includes(candidate)) {
+      result.push(candidate);
+    }
+  }
+  return result;
+}
+
+export function storageKeyForMode(mode: CampaignMode): string {
+  return mode === "training" ? TRAINING_STORAGE_KEY : LIVE_STORAGE_KEY;
+}
+
+export function migrateV1Save(value: unknown): GameState | null {
+  if (!isRecord(value) || value.version !== 1 || !isNonEmptyString(value.seed)) return null;
+  const origin = readCoordinates(value.origin);
+  if (!origin) return null;
+
+  let base: GameState;
+  try {
+    base = createGame({ origin, seed: value.seed });
+  } catch {
+    return null;
+  }
+
+  const legacyPorts = Array.isArray(value.ports) ? value.ports : [];
+  const ports = base.ports.map((port) => {
+    const legacyPort = legacyPorts.find((candidate) => isRecord(candidate) && candidate.id === port.id);
+    return legacyPort && isRecord(legacyPort)
+      ? { ...port, market: migrateMarket(port.market, legacyPort.market) }
+      : port;
+  });
+  const knownPortIds = new Set(ports.map((port) => port.id));
+  const discoveredPortIds = migratePortIds(value.discoveredPortIds, ports[0].id, knownPortIds);
+  const revealedMarketIds = migratePortIds(value.revealedMarketIds, ports[0].id, knownPortIds)
+    .filter((portId) => discoveredPortIds.includes(portId));
+
+  const legacyPlayer = isRecord(value.player) ? value.player : {};
+  const credits = isNonNegativeInteger(legacyPlayer.credits) ? legacyPlayer.credits : base.player.credits;
+  const cargoCapacity = validUpgradeCapacity(legacyPlayer.cargoCapacity)
+    ? legacyPlayer.cargoCapacity
+    : base.player.cargoCapacity;
+  const maxHull = isPositiveInteger(legacyPlayer.maxHull) && legacyPlayer.maxHull >= base.player.maxHull
+    ? legacyPlayer.maxHull
+    : base.player.maxHull;
+  const hull = isPositiveInteger(legacyPlayer.hull) && legacyPlayer.hull <= maxHull
+    ? legacyPlayer.hull
+    : base.player.hull;
+  const cargo = migrateCargo(legacyPlayer.cargo, cargoCapacity);
+
+  return {
+    version: 1,
+    seed: base.seed,
+    origin: base.origin,
+    ports,
+    dockedPortId: null,
+    discoveredPortIds,
+    revealedMarketIds,
+    consumedDockingProofIds: [],
+    dockSequence: 0,
+    encounter: null,
+    player: { credits, cargoCapacity, cargo, hull, maxHull },
+  };
+}
+
+export function encodeGameState(state: GameState): string {
+  const game = readGameState(state);
+  if (!game) throw new TypeError("Valid game state required");
+  return JSON.stringify({ version: 2, game });
+}
+
+export function decodeGameState(raw: string | null | undefined): GameState | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_SAVE_LENGTH) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  if (value.version === 1) return migrateV1Save(value);
+  if (value.version !== 2) return null;
+  return readGameState(value.game);
+}
