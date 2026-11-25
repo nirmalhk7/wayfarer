@@ -21,9 +21,11 @@ without changing live progress. It is selected automatically when foreground
 location permission is unavailable.
 
 Foreground location supports qualification while Wayfarer remains visible.
-Background location is optional; on Android 11+ Wayfarer explains its use before
-opening system settings. Only bounded docking-session totals are stored. Raw
-location samples and travel trails are never persisted.
+Background location is optional. On Android 11+ Wayfarer explains its use before
+opening system settings. Live saves keep the starting coordinates and generated
+ports on the device. Docking state stores the selected port and bounded session
+progress. Android backup and device transfer exclude those saves. Training uses a
+fixed simulated map. Ongoing GPS samples are processed in memory.
 
 ## Run during development
 

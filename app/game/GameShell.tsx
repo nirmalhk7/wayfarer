@@ -110,7 +110,8 @@ function cargoAmount(game: GameState, commodityId: string) {
 
 export default function GameShell() {
   const [game, setGame] = useState<GameState>(() => createEngineGame(DEMO_ORIGIN));
-  const [position, setPosition] = useState<Position>(DEMO_ORIGIN);
+  const [livePosition, setLivePosition] = useState<Position>(DEMO_ORIGIN);
+  const [trainingPosition, setTrainingPosition] = useState<Position>(DEMO_ORIGIN);
   const [selectedPortId, setSelectedPortId] = useState<string>(() => game.ports[0]?.id ?? "");
   const [training, setTraining] = useState(false);
   const [locationMode, setLocationMode] = useState("Connecting to navigation…");
@@ -122,6 +123,7 @@ export default function GameShell() {
   const pendingLivePositionRef = useRef<Position | null>(null);
   const centeredOnLivePositionRef = useRef(false);
 
+  const position = training ? trainingPosition : livePosition;
   const ports = game.ports;
   const commodities = COMMODITIES as Commodity[];
   const selectedPort = ports.find((port) => port.id === selectedPortId) ?? ports[0];
@@ -179,6 +181,7 @@ export default function GameShell() {
   }, [game, originReady, saveStatus]);
 
   useEffect(() => {
+    if (training) return;
     if (!navigator.geolocation) {
       let cancelled = false;
       queueMicrotask(() => {
@@ -192,36 +195,53 @@ export default function GameShell() {
       };
     }
 
+    let cancelled = false;
     const watchId = navigator.geolocation.watchPosition(
       (location) => {
+        if (cancelled) return;
         const livePosition = {
           latitude: location.coords.latitude,
           longitude: location.coords.longitude,
           accuracy: location.coords.accuracy,
         };
         pendingLivePositionRef.current = livePosition;
-        if (!training) {
-          setPosition(livePosition);
-          if (
-            saveStatusRef.current === "fresh"
-            && !centeredOnLivePositionRef.current
-          ) {
-            centeredOnLivePositionRef.current = true;
-            setGame(createEngineGame(livePosition));
-            setSelectedPortId("port-1");
-            setOriginReady(true);
-          }
+        setLivePosition(livePosition);
+        if (
+          saveStatusRef.current === "fresh"
+          && !centeredOnLivePositionRef.current
+        ) {
+          centeredOnLivePositionRef.current = true;
+          setGame(createEngineGame(livePosition));
+          setSelectedPortId("port-1");
+          setOriginReady(true);
         }
         setLocationMode(`Live navigator · ±${Math.round(location.coords.accuracy)} m`);
       },
       () => {
+        if (cancelled) return;
+        pendingLivePositionRef.current = null;
+        setLivePosition(DEMO_ORIGIN);
         setLocationMode("Location permission denied — demo origin engaged.");
         setOriginReady(true);
       },
       { enableHighAccuracy: true, maximumAge: 15_000, timeout: 10_000 },
     );
-    return () => navigator.geolocation.clearWatch(watchId);
+    return () => {
+      cancelled = true;
+      pendingLivePositionRef.current = null;
+      navigator.geolocation.clearWatch(watchId);
+    };
   }, [training]);
+
+  const toggleTraining = (enabled: boolean) => {
+    if (enabled) {
+      setTrainingPosition(game.origin);
+      setOriginReady(true);
+    }
+    setLivePosition(DEMO_ORIGIN);
+    setLocationMode("Connecting to navigation…");
+    setTraining(enabled);
+  };
 
   const applyOutcome = (outcome: Outcome, fallback: string) => {
     setGame(outcome);
@@ -277,7 +297,7 @@ export default function GameShell() {
         </div>
         <div className="wf-location" role="status">
           <span className="wf-signal" aria-hidden="true" />
-          {locationMode}
+          {training ? "Training navigator" : locationMode}
         </div>
       </header>
 
@@ -323,7 +343,7 @@ export default function GameShell() {
               </button>
             ))}
           </div>
-          <div className="wf-chart-footer"><span>GPS: {position.latitude.toFixed(4)}, {position.longitude.toFixed(4)}</span><span>Range measured in real space</span></div>
+          <div className="wf-chart-footer"><span>{training ? "Simulator" : "GPS"}: {position.latitude.toFixed(4)}, {position.longitude.toFixed(4)}</span><span>Range measured in real space</span></div>
         </section>
 
         <section className="wf-panel wf-port-detail" aria-labelledby="wf-port-title">
@@ -332,8 +352,8 @@ export default function GameShell() {
           <p className="wf-range">{selectedPort ? portStatusCopy({ portName: selectedPort.name, distanceMeters: distance, dockable, docked }) : "Select a destination."}</p>
           <div className="wf-port-actions">
             <button className="wf-button wf-button--primary" onClick={requestDock} type="button" disabled={!dockable || docked}> {docked ? "Docked" : "Request docking"} </button>
-            <label className="wf-training-toggle"><input checked={training} onChange={(event) => setTraining(event.target.checked)} type="checkbox" /> Training Simulator</label>
-            {training && <button className="wf-button wf-button--subtle" onClick={() => { if (selectedPort) { setPosition(selectedPort.position); setNotice(`Simulator moved you to ${selectedPort.name}.`); } }} type="button">Virtually arrive</button>}
+            <label className="wf-training-toggle"><input checked={training} onChange={(event) => toggleTraining(event.target.checked)} type="checkbox" /> Training Simulator</label>
+            {training && <button className="wf-button wf-button--subtle" onClick={() => { if (selectedPort) { setTrainingPosition(selectedPort.position); setNotice(`Simulator moved you to ${selectedPort.name}.`); } }} type="button">Virtually arrive</button>}
           </div>
         </section>
 

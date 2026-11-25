@@ -6,9 +6,11 @@ import {
   LEGACY_STORAGE_KEY,
   LIVE_STORAGE_KEY,
   TRAINING_STORAGE_KEY,
+  TRAINING_ORIGIN,
   decodeGameState,
   encodeGameState,
   migrateV1Save,
+  restoreTrainingGame,
   storageKeyForMode,
 } from "../src/persistence.ts";
 
@@ -25,6 +27,26 @@ test("live and training campaigns use separate v2 storage keys", () => {
   assert.match(TRAINING_STORAGE_KEY, /training.*v2/i);
   assert.equal(storageKeyForMode("live"), LIVE_STORAGE_KEY);
   assert.equal(storageKeyForMode("training"), TRAINING_STORAGE_KEY);
+});
+
+test("Training restores existing progress on the simulated map", () => {
+  const saved = createGame({
+    origin: { latitude: 10.123456, longitude: 20.654321 },
+    seed: "training-migration-test",
+  });
+  saved.player.credits = 725;
+  saved.ports[1].market[0].stock = 7;
+  const raw = encodeGameState(saved);
+  const restored = restoreTrainingGame(raw);
+
+  assert.deepEqual(restoreTrainingGame(null).origin, TRAINING_ORIGIN);
+  assert.deepEqual(restored.origin, TRAINING_ORIGIN);
+  assert.deepEqual(restored.ports.map((port) => port.position),
+    createGame({ origin: TRAINING_ORIGIN, seed: saved.seed }).ports.map((port) => port.position));
+  assert.equal(restored.player.credits, 725);
+  assert.deepEqual(restored.ports[1].market, saved.ports[1].market);
+  assert.deepEqual(decodeGameState(encodeGameState(restored)), restored);
+  assert.deepEqual(decodeGameState(raw), saved);
 });
 
 test("v2 codec round-trips a valid game without persisting location history", () => {

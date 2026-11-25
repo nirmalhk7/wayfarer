@@ -14,6 +14,7 @@ import {
 export const LIVE_STORAGE_KEY = "wayfarer.mobile.live.save.v2";
 export const TRAINING_STORAGE_KEY = "wayfarer.mobile.training.save.v2";
 export const LEGACY_STORAGE_KEY = "wayfarer.mobile.save.v1";
+export const TRAINING_ORIGIN: Coordinates = { latitude: 39.7392, longitude: -104.9903 };
 
 export type CampaignMode = "live" | "training";
 
@@ -379,4 +380,21 @@ export function decodeGameState(raw: string | null | undefined): GameState | nul
   if (value.version === 1) return migrateV1Save(value);
   if (value.version !== 2) return null;
   return readGameState(value.game);
+}
+
+export function restoreTrainingGame(raw: string | null): GameState {
+  const saved = decodeGameState(raw);
+  const map = createGame({
+    origin: TRAINING_ORIGIN,
+    seed: saved?.seed ?? "wayfarer-mobile-training-v2",
+  });
+  if (!saved) return map;
+
+  // Older Training campaigns sometimes used the first real GPS fix. Port IDs
+  // are stable across maps, so use synthetic positions and retain the markets.
+  return {
+    ...saved,
+    origin: map.origin,
+    ports: map.ports.map((port, index) => ({ ...port, market: saved.ports[index].market })),
+  };
 }

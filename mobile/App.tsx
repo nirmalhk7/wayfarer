@@ -49,8 +49,10 @@ import {
 import { requestAndroidNotificationPermission } from "./src/location/notificationPermission";
 import {
   LEGACY_STORAGE_KEY,
+  TRAINING_ORIGIN,
   decodeGameState,
   encodeGameState,
+  restoreTrainingGame,
   storageKeyForMode,
   type CampaignMode,
 } from "./src/persistence";
@@ -83,7 +85,7 @@ import {
   DockingStatusCard,
 } from "./src/ui/DockingStatusCard";
 
-const DEMO_ORIGIN: Coordinates = { latitude: 39.7392, longitude: -104.9903 };
+const DEMO_ORIGIN = TRAINING_ORIGIN;
 const COLORS = {
   void: "#050b0a",
   deep: "#081310",
@@ -346,7 +348,7 @@ export default function App() {
   const { width } = useWindowDimensions();
   const initialCampaigns = useMemo<Campaigns>(() => ({
     live: createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-live-v2" }),
-    training: createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-training-v2" }),
+    training: restoreTrainingGame(null),
   }), []);
   const [campaigns, setCampaigns] = useState<Campaigns>(initialCampaigns);
   const [mode, setMode] = useState<CampaignMode>("live");
@@ -504,24 +506,24 @@ export default function App() {
     let cancelled = false;
     async function boot() {
       let live: GameState | null = null;
-      let training: GameState | null = null;
+      let trainingRaw: string | null = null;
       try {
-        const [liveRaw, trainingRaw, legacyRaw] = await Promise.all([
+        const [liveRaw, storedTraining, legacyRaw] = await Promise.all([
           AsyncStorage.getItem(storageKeyForMode("live")),
           AsyncStorage.getItem(storageKeyForMode("training")),
           AsyncStorage.getItem(LEGACY_STORAGE_KEY),
         ]);
         live = decodeGameState(liveRaw ?? legacyRaw);
-        training = decodeGameState(trainingRaw);
+        trainingRaw = storedTraining;
       } catch {
         // Corrupt or unavailable saves start isolated local campaigns.
       }
+      const nextTraining = restoreTrainingGame(trainingRaw);
 
       const permission = await Location.requestForegroundPermissionsAsync();
       if (cancelled) return;
       if (permission.status !== "granted") {
         const nextLive = live ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-live-v2" });
-        const nextTraining = training ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-training-v2" });
         setCampaigns({ live: nextLive, training: nextTraining });
         setPositions({ live: nextLive.origin, training: nextTraining.origin });
         setMode("training");
@@ -540,7 +542,6 @@ export default function App() {
           longitude: current.coords.longitude,
         };
         const nextLive = live ?? createGame({ origin: coordinates, seed: "wayfarer-mobile-live-v2" });
-        const nextTraining = training ?? createGame({ origin: coordinates, seed: "wayfarer-mobile-training-v2" });
         // A foreground process restart is a discontinuity: pause first so the
         // next fix can recover, but never earns the unobserved wall-clock gap.
         const persisted = await pausePersistedDockingCoordinator()
@@ -621,7 +622,6 @@ export default function App() {
         );
       } catch {
         const nextLive = live ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-live-v2" });
-        const nextTraining = training ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-training-v2" });
         setCampaigns({ live: nextLive, training: nextTraining });
         setPositions({ live: nextLive.origin, training: nextTraining.origin });
         setMode("training");

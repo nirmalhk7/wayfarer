@@ -23,6 +23,8 @@ With location permission, the browser uses your position to center a new star
 chart and check docking range. Progress is saved in browser storage, including
 the starting coordinates and the generated port coordinates. The current
 location reading is held in memory for navigation.
+The Training Simulator pauses the browser's location watch until you return
+to live navigation.
 
 This repository also contains an [Android MVP](mobile/README.md).
 

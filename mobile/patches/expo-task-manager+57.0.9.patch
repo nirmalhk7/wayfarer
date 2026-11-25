@@ -1,0 +1,10 @@
+diff --git a/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java b/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
+--- a/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
++++ b/node_modules/expo-task-manager/android/src/main/java/expo/modules/taskManager/TaskManagerUtils.java
+@@ -204,3 +204,5 @@
+         .setExtras(extras)
+-        .setPersisted(true)
++        // Raw Wayfarer location batches should stay in memory. Geofence jobs
++        // may still survive reboot with their selected-port metadata.
++        .setPersisted(!"wayfarer-selected-port-location".equals(extras.getString("taskName")))
+         .setRequiresDeviceIdle(false);
