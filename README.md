@@ -1,8 +1,39 @@
 # Wayfarer
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Wayfarer is an original space-trading game that combines Space Trader-style
+commodity markets with Pokémon GO-style real-world exploration. Real places
+become fictional starports. Buy cargo where it is cheap, travel in the real
+world, and sell it where demand is higher. The longer-term vision adds more to
+discover and collect along the way, plus short narrative encounters that recap
+the trip once you've stopped.
+
+## Play the web prototype
+
+The browser prototype runs on [vinext](https://github.com/cloudflare/vinext).
+Its star chart generates nearby ports. Market rumors hint at prices, and docking
+within range reveals exact prices and lets you buy or sell cargo. Docking can
+also trigger a short encounter with a choice to make. Spend your credits to
+expand the cargo hold or reinforce the hull.
+
+Play only while safely stopped in a public place. Generated ports are test
+points. To try trading without traveling, turn on **Training Simulator**,
+select a port, choose **Virtually arrive**, then request docking.
+
+With location permission, the browser uses your position to center a new star
+chart and check docking range. Progress is saved in browser storage, including
+the starting coordinates and the generated port coordinates. The current
+location reading is held in memory for navigation.
+
+This repository also contains an [Android MVP](mobile/README.md).
+
+## Roadmap
+
+- Curate starports at safe, publicly accessible places and exclude private-property
+  destinations.
+- Build shared markets, asynchronous contracts, and cargo routes with multiple
+  stops. Keep player locations private and exclude live player tracking.
+- Explore a full native client backed by a game server, building on the Android
+  MVP.
 
 ## Prerequisites
 
