@@ -1,3 +1,4 @@
+import { COCKPIT } from "./cockpitTheme";
 import { useEffect, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -118,7 +119,7 @@ export function BackgroundPermissionModal({
   onContinue: () => void;
 }) {
   return (
-    <Modal animationType="fade" onRequestClose={onCancel} transparent visible={visible}>
+    <Modal onRequestClose={onCancel} transparent visible={visible}>
       <View style={styles.scrim}>
         <View style={styles.modalCard}>
           <Text style={styles.modalEyebrow}>BACKGROUND NAVIGATION</Text>
@@ -151,22 +152,22 @@ export function BackgroundPermissionModal({
 }
 
 const styles = StyleSheet.create({
-  card: { borderWidth: 1, borderColor: "#2f4336", backgroundColor: "#0b1915", padding: 13, marginBottom: 12 },
+  card: { borderWidth: 1, borderColor: COCKPIT.line, backgroundColor: COCKPIT.panel, padding: 13, marginBottom: 12 },
   topline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  phase: { color: "#c5df57", fontSize: 10, fontWeight: "900", letterSpacing: 1 },
-  countdown: { color: "#f0a43b", fontSize: 9, fontWeight: "900", letterSpacing: .7 },
-  detail: { color: "#8f9d8d", fontSize: 9, lineHeight: 14, marginTop: 6 },
-  warning: { borderTopWidth: 1, borderColor: "#2f4336", marginTop: 10, paddingTop: 9 },
-  warningText: { color: "#f0a43b", fontSize: 8, lineHeight: 12, letterSpacing: .5 },
-  action: { minHeight: 34, borderWidth: 1, borderColor: "#f0a43b", alignItems: "center", justifyContent: "center", marginTop: 8 },
-  actionText: { color: "#f0a43b", fontSize: 8, fontWeight: "900", letterSpacing: .8 },
+  phase: { color: COCKPIT.signal, fontSize: 10, fontWeight: "900", letterSpacing: 1 },
+  countdown: { color: COCKPIT.accent, fontSize: 9, fontWeight: "900", letterSpacing: .7 },
+  detail: { color: COCKPIT.muted, fontSize: 9, lineHeight: 14, marginTop: 6 },
+  warning: { borderTopWidth: 1, borderColor: COCKPIT.line, marginTop: 10, paddingTop: 9 },
+  warningText: { color: COCKPIT.accent, fontSize: 11, lineHeight: 16, letterSpacing: .5 },
+  action: { minHeight: 44, borderWidth: 1, borderColor: COCKPIT.accent, alignItems: "center", justifyContent: "center", marginTop: 8 },
+  actionText: { color: COCKPIT.accent, fontSize: 8, fontWeight: "900", letterSpacing: .8 },
   scrim: { flex: 1, justifyContent: "center", padding: 22, backgroundColor: "rgba(0,0,0,.82)" },
-  modalCard: { borderWidth: 1, borderColor: "#c5df57", backgroundColor: "#0d1d18", padding: 22 },
-  modalEyebrow: { color: "#c5df57", fontSize: 8, fontWeight: "900", letterSpacing: 1.2 },
-  modalTitle: { color: "#f2edcf", fontSize: 23, lineHeight: 27, fontWeight: "900", marginTop: 5 },
-  modalCopy: { color: "#8f9d8d", fontSize: 11, lineHeight: 18, marginTop: 12 },
-  primary: { minHeight: 44, backgroundColor: "#c5df57", alignItems: "center", justifyContent: "center", marginTop: 18 },
-  primaryText: { color: "#050b0a", fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-  secondary: { minHeight: 40, borderWidth: 1, borderColor: "#2f4336", alignItems: "center", justifyContent: "center", marginTop: 8 },
-  secondaryText: { color: "#f2edcf", fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  modalCard: { borderWidth: 1, borderColor: COCKPIT.signal, backgroundColor: COCKPIT.panel, padding: 22 },
+  modalEyebrow: { color: COCKPIT.signal, fontSize: 8, fontWeight: "900", letterSpacing: 1.2 },
+  modalTitle: { color: COCKPIT.text, fontSize: 23, lineHeight: 27, fontWeight: "900", marginTop: 5 },
+  modalCopy: { color: COCKPIT.muted, fontSize: 11, lineHeight: 18, marginTop: 12 },
+  primary: { minHeight: 44, backgroundColor: COCKPIT.signal, alignItems: "center", justifyContent: "center", marginTop: 18 },
+  primaryText: { color: COCKPIT.void, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  secondary: { minHeight: 40, borderWidth: 1, borderColor: COCKPIT.line, alignItems: "center", justifyContent: "center", marginTop: 8 },
+  secondaryText: { color: COCKPIT.text, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
 });

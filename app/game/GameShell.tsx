@@ -146,6 +146,16 @@ function isFreshFix({ timestamp }: GeolocationPosition) {
   return age >= 0 && age <= MAX_FIX_AGE_MS;
 }
 
+const SCOPE_PORTS = [
+  { x: 22, y: 27, callsign: "WFR-00" },
+  { x: 63, y: 22, callsign: "LMN-17" },
+  { x: 82, y: 45, callsign: "CND-04" },
+  { x: 19, y: 61, callsign: "VEL-09" },
+  { x: 53, y: 74, callsign: "MRW-31" },
+  { x: 29, y: 85, callsign: "ORC-22" },
+  { x: 80, y: 80, callsign: "KPL-08" },
+];
+
 function MarketOrders({ game, portId, docked, busy, onOrder }: {
   game: GameState;
   portId: string;
@@ -229,6 +239,7 @@ export default function GameShell() {
   const ports = game.ports;
   const commodities = COMMODITIES as Commodity[];
   const selectedPort = ports.find((port) => port.id === selectedPortId) ?? ports[0];
+  const scopeTarget = SCOPE_PORTS[ports.indexOf(selectedPort)];
   const distance = selectedPort ? metersBetween(position, selectedPort) : Number.POSITIVE_INFINITY;
   const isInRange = (portId: string) => Boolean(position && (
     training ? canDock(game, portId, position) : canConfirmDock(game, portId, position)
@@ -448,9 +459,9 @@ export default function GameShell() {
   return (
     <main className="wf-console" aria-label="Wayfarer space trading console">
       <header className="wf-topbar">
-        <div>
-          <p className="wf-kicker">Independent trader network · Sol sector</p>
-          <h1>WAYFARER</h1>
+        <div className="wf-brand">
+          <span className="wf-brand-mark" aria-hidden="true" />
+          <div><h1>WAYFARER</h1><p>Independent trader network · Sol sector</p></div>
         </div>
         <div className="wf-location" role="status">
           <span className="wf-signal" aria-hidden="true" />
@@ -468,41 +479,40 @@ export default function GameShell() {
       <p className="wf-notice" role="status">{notice}</p>
 
       <div className="wf-dashboard">
-        <section className="wf-panel wf-news" aria-labelledby="wf-news-title">
-          <div className="wf-panel-heading"><p className="wf-kicker">Network relay</p><h2 id="wf-news-title">Galactic News</h2></div>
-          <ul className="wf-rumor-list">
-            {rumors.length ? rumors.map((rumor) => (
-              <li className={`wf-rumor wf-rumor--${rumor.tone}`} key={rumor.id}>
-                <strong>{rumor.headline}</strong><span>{rumor.detail}</span>
-              </li>
-            )) : <li className="wf-empty">No actionable transmissions. Keep your antenna clear.</li>}
-          </ul>
-        </section>
-
         <section className="wf-panel wf-chart" aria-labelledby="wf-chart-title">
-          <div className="wf-panel-heading"><p className="wf-kicker">Navigator</p><h2 id="wf-chart-title">Local Star Chart</h2></div>
-          <p className="wf-port-flavor"><strong>Public pilot preset unavailable.</strong> Desk check complete. Field validation pending.</p>
-          <p className="wf-port-flavor">The chart shows generated test points. Use Training for route tests. Do not travel to these points.</p>
+          <div className="wf-panel-heading"><h2 id="wf-chart-title">Local Star Chart</h2></div>
           <div className="wf-radar" aria-label="Constellation plot of nearby trade ports">
             <span className="wf-radar-ring wf-radar-ring--one" aria-hidden="true" />
             <span className="wf-radar-ring wf-radar-ring--two" aria-hidden="true" />
             <span className="wf-radar-axis wf-radar-axis--x" aria-hidden="true" />
             <span className="wf-radar-axis wf-radar-axis--y" aria-hidden="true" />
-            <span className="wf-ship-marker" aria-label="Your current position">✦</span>
-            {ports.slice(0, 7).map((port, index) => (
-              <button
-                className={`wf-port-dot wf-port-dot--${index} ${selectedPort?.id === port.id ? "is-selected" : ""}`}
-                key={port.id}
-                onClick={() => setSelectedPortId(port.id)}
-                type="button"
-                disabled={busy}
-                aria-pressed={selectedPort?.id === port.id}
-                aria-label={`Select ${port.name}`}
-              >
-                <span aria-hidden="true" />{port.name}
-              </button>
-            ))}
+            <span className="wf-scope-readout">Schematic scope</span>
+            {scopeTarget && <span className="wf-scope-vector" aria-hidden="true"
+              style={{ clipPath: `polygon(50% 51.8%, ${scopeTarget.x}% ${scopeTarget.y - 0.2}%, ${scopeTarget.x}% ${scopeTarget.y + 0.2}%, 50% 52.2%)` }} />}
+            <span className="wf-ship-marker" aria-hidden="true" />
+            {ports.slice(0, SCOPE_PORTS.length).map((port, index) => {
+              const { x, y, callsign } = SCOPE_PORTS[index];
+              return (
+                <button
+                  className={`wf-port-dot ${selectedPort.id === port.id ? "is-selected" : ""} ${game.discoveredPortIds.includes(port.id) ? "is-visited" : ""}`}
+                  key={port.id}
+                  style={{ left: `${x}%`, top: `${y}%` }}
+                  onClick={() => setSelectedPortId(port.id)}
+                  type="button"
+                  disabled={busy}
+                  aria-pressed={selectedPort.id === port.id}
+                  aria-label={`Select ${port.name}`}
+                >
+                  <span className="wf-port-symbol" aria-hidden="true" />
+                  <span className="wf-port-name">{port.name}</span>
+                  <span className="wf-port-callsign">{callsign}</span>
+                </button>
+              );
+            })}
           </div>
+          <p className="wf-scope-key"><strong>Triangle: ship</strong><span>Diamond: port</span><span>Amber: selected</span></p>
+          <p className="wf-test-caption"><strong>Public pilot preset unavailable.</strong> Desk check complete. Field validation pending.
+            {" "}The chart shows generated test points. Use Training for route tests. Do not travel to these points.</p>
           <details className="wf-port-list">
             <summary>Port list and discoveries ({game.discoveredPortIds.length} / {ports.length})</summary>
             <ul>
@@ -520,7 +530,7 @@ export default function GameShell() {
         </section>
 
         <section className="wf-panel wf-port-detail" aria-labelledby="wf-port-title">
-          <div className="wf-panel-heading"><p className="wf-kicker">Selected destination</p><h2 id="wf-port-title">{selectedPort?.name ?? "No port selected"}</h2></div>
+          <div className="wf-panel-heading"><h2 id="wf-port-title">{selectedPort.name}</h2><span className="wf-panel-state">{scopeTarget?.callsign}</span></div>
           <p className="wf-port-flavor">{selectedPort.flavor ?? "Generated test port. Use Training to simulate arrival."}</p>
           <p className="wf-range">{training
             ? portStatusCopy({ portName: selectedPort.name, distanceMeters: distance, dockable, docked })
@@ -553,10 +563,10 @@ export default function GameShell() {
         </section>
 
         <section className="wf-panel wf-market" aria-labelledby="wf-market-title">
-          <div className="wf-panel-heading"><p className="wf-kicker">{docked ? "Open for trading" : "Dock to unlock"}</p><h2 id="wf-market-title">Port Market</h2></div>
-          {contractRoute && <section aria-label="Cargo contract" className="wf-receipt">
-            <h3>{DELIVERY.title}</h3>
-            <p>{contractRoute.origin.name} → {contractRoute.destination.name} · {DELIVERY.quantity} Ion Fuel · Reward {DELIVERY.reward} cr</p>
+          <div className="wf-panel-heading"><h2 id="wf-market-title">Port Market</h2><span className="wf-panel-state">{docked ? "Open for trading" : "Dock to unlock"}</span></div>
+          {contractRoute && <section aria-label="Cargo contract" className="wf-receipt wf-contract">
+            <header><h3>{DELIVERY.title}</h3><span>Reward {DELIVERY.reward} cr</span></header>
+            <p>{contractRoute.origin.name} → {contractRoute.destination.name} · {DELIVERY.quantity} Ion Fuel</p>
             {!game.delivery && <>
               <p>Dock at {contractRoute.origin.name} to accept.</p>
               <button className="wf-button wf-button--subtle" type="button"
@@ -564,7 +574,7 @@ export default function GameShell() {
                 onClick={() => runContract(acceptDelivery, "Contract accepted. Buy Ion Fuel at Wayfarer Freeport.")}>Accept cargo contract</button>
             </>}
             {game.delivery?.status === "active" && <>
-              <p aria-live="polite">{game.delivery.loaded} / {DELIVERY.quantity} Ion Fuel reserved</p>
+              <p className="wf-contract-progress" aria-live="polite">{game.delivery.loaded} / {DELIVERY.quantity} Ion Fuel reserved</p>
               <p>{game.delivery.loaded < DELIVERY.quantity
                 ? `Buy Ion Fuel at ${contractRoute.origin.name}. Your contract fuel is reserved from sale.`
                 : `Select ${contractRoute.destination.name} on the chart or port list and dock there to deliver.`}</p>
@@ -592,7 +602,8 @@ export default function GameShell() {
         </section>
 
         <section className="wf-panel wf-manifest" aria-labelledby="wf-manifest-title">
-          <div className="wf-panel-heading"><p className="wf-kicker">Ship systems</p><h2 id="wf-manifest-title">Ship Manifest</h2></div>
+          <div className="wf-panel-heading"><h2 id="wf-manifest-title">Ship Manifest</h2></div>
+          <div className="wf-ship-diagram" aria-hidden="true"><span /></div>
           <dl className="wf-manifest-grid"><div><dt>Available credits</dt><dd>{Number(credits).toLocaleString()} cr</dd></div><div><dt>Free cargo space</dt><dd>{Math.max(0, Number(capacity || 0) - totals.units)} units</dd></div><div><dt>Hull integrity</dt><dd>{hull} / {hullMax}</dd></div></dl>
           <h3 id="wf-upgrades-title" tabIndex={-1}>Upgrades</h3>
           <div className="wf-upgrades">{UPGRADES.map((upgrade) => {
@@ -618,6 +629,17 @@ export default function GameShell() {
               onClick={() => resetDialog.current?.showModal()}>Reset {campaignName} game data</button>
           </section>
         </section>
+        <section className="wf-panel wf-news" aria-labelledby="wf-news-title">
+          <div className="wf-panel-heading"><h2 id="wf-news-title">Galactic News</h2></div>
+          <ul className="wf-rumor-list">
+            {rumors.length ? rumors.map((rumor) => (
+              <li className={`wf-rumor wf-rumor--${rumor.tone}`} key={rumor.id}>
+                <strong>{rumor.headline}</strong><span>{rumor.detail}</span>
+              </li>
+            )) : <li className="wf-empty">No actionable transmissions. Keep your antenna clear.</li>}
+          </ul>
+        </section>
+
       </div>
 
       <dialog ref={resetDialog} className="wf-reset-dialog" aria-labelledby="wf-reset-title" aria-describedby="wf-reset-description">
@@ -631,7 +653,7 @@ export default function GameShell() {
       </dialog>
 
       {activeEncounter && <section className="wf-encounter" aria-labelledby="wf-encounter-title" role="dialog" aria-modal="true">
-        <p className="wf-kicker">Incoming priority channel</p><h2 id="wf-encounter-title">{activeEncounter.title ?? activeEncounter.type ?? "Unidentified encounter"}</h2><p>{activeEncounter.description ?? activeEncounter.message ?? "A ship is hailing you for a decision."}</p>
+        <h2 id="wf-encounter-title">{activeEncounter.title ?? activeEncounter.type ?? "Unidentified encounter"}</h2><p>{activeEncounter.description ?? activeEncounter.message ?? "A ship is hailing you for a decision."}</p>
         <div className="wf-encounter-actions">{(activeEncounter.type === "distress" ? ["help", "run"] : ["run", "pay", "fight"]).map((choice) => <button className="wf-button wf-button--primary" key={choice} disabled={busy} onClick={() => resolve(choice as "run" | "pay" | "fight" | "help")} type="button">{choice}</button>)}</div>
       </section>}
     </main>

@@ -16,7 +16,8 @@ URL = "http://127.0.0.1:4197/"
 
 
 def verify(browser):
-    context = browser.new_context(viewport={"width": 390, "height": 844})
+    width, height = map(int, os.environ.get("WAYFARER_TEST_VIEWPORT", "390x844").split("x"))
+    context = browser.new_context(viewport={"width": width, "height": height}, reduced_motion="reduce")
     external_requests = []
 
     def local_only(route):
@@ -50,6 +51,7 @@ def verify(browser):
     expect(page.get_by_text("Do not travel to these points.", exact=False)).to_be_visible()
     expect(button("Enable public pilot")).to_have_count(0)
     expect(page.get_by_label("Training Simulator")).to_be_enabled()
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
     assert page.evaluate("window.pilotLocationCalls") == 0
 
     context.set_offline(True)
@@ -61,6 +63,10 @@ def verify(browser):
     expect(contract).to_contain_text("2 / 2 Ion Fuel reserved")
     expect(button("Deliver reserved cargo")).to_be_disabled()
     button("Select Cinder Exchange").press("Enter")
+    button("Set destination").press("Enter")
+    expect(page.get_by_text("Route to Cinder Exchange", exact=False)).to_be_visible()
+    page.evaluate("window.scrollTo(0, 0)")
+    capture(page, "wayfarer-cockpit.png")
     capture(page.get_by_role("region", name="Local Star Chart"), "wayfarer-route.png")
     button("Virtually arrive").press("Enter")
     button("Request docking").press("Enter")
@@ -72,6 +78,7 @@ def verify(browser):
     expect(page.get_by_role("region", name="Ship status")).to_contain_text("0 / 12 units")
     expect(page.get_by_role("region", name="Ship status")).to_contain_text("748 cr")
     capture(page.get_by_role("region", name="Ship Manifest"), "wayfarer-upgrade.png")
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
     assert page.evaluate("window.pilotLocationCalls") == 0
 
     context.set_offline(False)
@@ -87,7 +94,10 @@ def verify(browser):
     expect(page.get_by_role("region", name="Ship status")).to_contain_text("900 cr")
     assert page.evaluate("window.pilotLocationCalls") == 0
     assert not external_requests, external_requests
-    print("PASS: closed public preset, offline delivery and reset, reload without replay, no GPS or outbound network requests")
+    if width < 700:
+        page.set_viewport_size({"width": 320, "height": height})
+        assert page.evaluate("document.documentElement.scrollWidth") == 320
+    print(f"PASS {width}x{height}: plotted route, offline delivery and upgrade, reload, reset, no GPS or outbound network requests")
 
 
 def main():

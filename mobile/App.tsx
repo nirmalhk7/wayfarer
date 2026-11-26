@@ -93,6 +93,8 @@ import {
   DockingStatusCard,
 } from "./src/ui/DockingStatusCard";
 
+import { COCKPIT as COLORS } from "./src/ui/cockpitTheme";
+
 const DEMO_ORIGIN: Coordinates = { latitude: 39.7392, longitude: -104.9903 };
 
 async function clearLiveDockingData() {
@@ -104,19 +106,7 @@ async function clearLiveDockingData() {
   // Queue disarm even if a previously requested registration is still pending.
   if (background.available) await disarmSelectedPortGeofence();
 }
-const COLORS = {
-  void: "#050b0a",
-  deep: "#081310",
-  panel: "#0d1d18",
-  panelLift: "#12261f",
-  line: "#2f4336",
-  cream: "#f2edcf",
-  muted: "#8f9d8d",
-  lime: "#c5df57",
-  limeDark: "#6f812b",
-  amber: "#f0a43b",
-  coral: "#ef674e",
-};
+const SCOPE_STARS = [[9,18], [28,14], [43,34], [64,12], [89,17], [91,57], [72,63], [18,78], [51,85], [88,88]];
 
 type Tab = "chart" | "market" | "ship";
 
@@ -152,7 +142,7 @@ function Button({
         pressed && !disabled && styles.buttonPressed,
       ]}
     >
-      <Text style={[styles.buttonLabel, tone === "lime" && styles.buttonLabelDark]}>{label}</Text>
+      <Text style={[styles.buttonLabel, (tone === "lime" || tone === "danger") && !disabled && styles.buttonLabelDark]}>{label}</Text>
     </Pressable>
   );
 }
@@ -200,8 +190,23 @@ function StarChart({
   onSelect: (portId: string) => void;
   size: number;
 }) {
+  const ship = chartPosition(game.origin, position);
+  const target = game.ports.find(({ id }) => id === selectedPortId);
+  const aim = target ? chartPosition(game.origin, target.position) : ship;
+  const dx = (aim.x - ship.x) * size / 100;
+  const dy = (aim.y - ship.y) * size / 100;
+  const vectorLength = Math.hypot(dx, dy);
+  const vectorAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+
   return (
-    <View accessibilityLabel="Nearby starport chart" style={[styles.radar, { height: size }]}>
+    <View accessibilityLabel="Nearby starport chart" style={[styles.radar, { height: size, width: size }]}>
+      {SCOPE_STARS.map(([x, y]) => <View key={x} style={[styles.scopeStar, { left: `${x}%`, top: `${y}%` }]} />)}
+      <Text style={styles.scopeLabel}>Local scope</Text>
+      {vectorLength > 0 && <View pointerEvents="none" style={[styles.scopeVector, {
+        top: `${(aim.y + ship.y) / 2}%`, left: `${(aim.x + ship.x) / 2}%`,
+        width: vectorLength, marginLeft: -vectorLength / 2,
+        transform: [{ rotate: `${vectorAngle}deg` }],
+      }]} />}
       <View style={[
         styles.radarRing,
         {
@@ -222,9 +227,8 @@ function StarChart({
       ]} />
       <View style={styles.radarAxisHorizontal} />
       <View style={styles.radarAxisVertical} />
-      <View style={styles.shipMarker}>
-        <Text style={styles.shipMarkerGlyph}>◆</Text>
-        <Text style={styles.shipMarkerLabel}>YOU</Text>
+      <View pointerEvents="none" style={[styles.shipMarker, { left: `${ship.x}%`, top: `${ship.y}%` }]}>
+        <View style={styles.shipPointer} />
       </View>
       {game.ports.map((port, index) => {
         const point = index === 0
@@ -236,6 +240,7 @@ function StarChart({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`${port.name}, ${formatDistance(distanceMeters(position, port.position))}`}
+            accessibilityState={{ selected }}
             key={port.id}
             onPress={() => onSelect(port.id)}
             hitSlop={10}
@@ -244,7 +249,7 @@ function StarChart({
               {
                 left: `${point.x}%`,
                 top: `${point.y}%`,
-                transform: [{ translateX: -22 }, { translateY: -22 }],
+                transform: [{ translateX: -28 }, { translateY: -22 }],
               },
             ]}
           >
@@ -323,10 +328,13 @@ function CargoContract({ game, dockedPortId, saving, onAccept, onDeliver }: {
   if (!route) return null;
   const delivery = game.delivery;
   return (
-    <View style={styles.receipt}>
-      <Text style={styles.receiptTitle} accessibilityRole="header">{DELIVERY.title}</Text>
+    <View style={[styles.receipt, styles.contract]}>
+      <View style={styles.contractHeading}>
+        <Text style={styles.receiptTitle} accessibilityRole="header">{DELIVERY.title}</Text>
+        <Text style={styles.contractReward}>Reward {DELIVERY.reward} cr</Text>
+      </View>
       <Text style={styles.receiptLine}>
-        {route.origin.name} → {route.destination.name} · {DELIVERY.quantity} Ion Fuel · Reward {DELIVERY.reward} cr
+        {route.origin.name} → {route.destination.name} · {DELIVERY.quantity} Ion Fuel
       </Text>
       {!delivery && <>
         <Text style={styles.receiptLine}>Dock at {route.origin.name} to accept.</Text>
@@ -384,7 +392,7 @@ function EncounterModal({ game, onResolve }: {
       ? "A customs cutter requests manifest verification and an expedited inspection fee."
       : "A damaged courier is broadcasting a weak rescue signal.";
   return (
-    <Modal animationType="fade" transparent visible>
+    <Modal transparent visible>
       <View style={styles.modalScrim}>
         <View style={styles.encounterCard}>
           <Text style={styles.alertCode}>PRIORITY CONTACT · SEVERITY {encounter.severity}</Text>
@@ -1018,7 +1026,7 @@ export default function App() {
         <View style={styles.bootMark}><Text style={styles.bootMarkText}>W</Text></View>
         <Text style={styles.bootTitle}>WAYFARER</Text>
         <Text style={styles.bootSubtitle}>TRADE THE CITY · CHART THE UNKNOWN</Text>
-        <ActivityIndicator color={COLORS.lime} size="small" style={styles.bootSpinner} />
+        <ActivityIndicator color={COLORS.accent} size="small" style={styles.bootSpinner} />
         <Text style={styles.bootStatus}>{locationStatus}</Text>
       </SafeAreaView>
     );
@@ -1028,9 +1036,14 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
       <View style={styles.appHeader}>
-        <View>
-          <Text style={styles.appEyebrow}>INDEPENDENT TRADER NETWORK</Text>
-          <Text style={styles.appTitle}>WAYFARER</Text>
+        <View style={styles.brand}>
+          <View style={styles.brandMark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            <View style={styles.shipPointer} />
+          </View>
+          <View style={styles.flexOne}>
+            <Text style={styles.appTitle} accessibilityRole="header">WAYFARER</Text>
+            <Text style={styles.appEyebrow}>Independent trader network</Text>
+          </View>
         </View>
         <View style={styles.gpsBadge}>
           <View style={[styles.signalDot, mode === "training" && styles.signalDotTraining]} />
@@ -1098,6 +1111,7 @@ export default function App() {
                 selectedPortId={selectedPort.id}
                 size={radarSize - 34}
               />
+              <Text style={styles.scopeLegend}>Triangle: ship · Diamond: port · Amber: selected</Text>
             </View>
 
             <View style={styles.destinationCard}>
@@ -1151,8 +1165,8 @@ export default function App() {
                       ? "TRAINING CAMPAIGN ACTIVE · LIVE PROGRESS UNCHANGED"
                       : "LIVE CAMPAIGN ACTIVE");
                   }}
-                  thumbColor={mode === "training" ? COLORS.lime : COLORS.muted}
-                  trackColor={{ false: COLORS.line, true: COLORS.limeDark }}
+                  thumbColor={mode === "training" ? COLORS.accent : COLORS.muted}
+                  trackColor={{ false: COLORS.line, true: COLORS.frame }}
                   value={mode === "training"}
                 />
               </View>
@@ -1304,10 +1318,10 @@ export default function App() {
 
       <View style={styles.tabBar}>
         {([
-          ["chart", "⌖", "CHART"],
-          ["market", "⇄", "MARKET"],
-          ["ship", "◆", "SHIP"],
-        ] as const).map(([key, glyph, label]) => (
+          ["chart", "CHART"],
+          ["market", "MARKET"],
+          ["ship", "SHIP"],
+        ] as const).map(([key, label]) => (
           <Pressable
             accessibilityRole="tab"
             accessibilityState={{ selected: tab === key }}
@@ -1318,7 +1332,12 @@ export default function App() {
             }}
             style={[styles.tab, tab === key && styles.tabActive]}
           >
-            <Text style={[styles.tabGlyph, tab === key && styles.tabTextActive]}>{glyph}</Text>
+            <View importantForAccessibility="no" style={[
+              styles.tabMark,
+              key === "chart" && styles.tabMarkChart,
+              key === "ship" && styles.tabMarkShip,
+              tab === key && styles.tabMarkActive,
+            ]} />
             <Text style={[styles.tabLabel, tab === key && styles.tabTextActive]}>{label}</Text>
           </Pressable>
         ))}
@@ -1352,130 +1371,141 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  brand: { flex: 1, minWidth: 175, flexDirection: "row", alignItems: "center", gap: 9 },
+  brandMark: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#80664e", backgroundColor: COLORS.contract },
+  scopeLabel: { position: "absolute", left: 8, top: 7, fontSize: 10, color: COLORS.muted },
+  scopeStar: { position: "absolute", width: 2, height: 2, backgroundColor: "#91afc8", borderRadius: 1 },
+  scopeVector: { position: "absolute", height: 1, backgroundColor: "#ac855c" },
+  shipPointer: { width: 0, height: 0, borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 15, borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: COLORS.signal },
+  scopeLegend: { color: COLORS.muted, fontSize: 11, lineHeight: 16, marginTop: 8 },
+  contract: { backgroundColor: COLORS.contract, borderStyle: "dashed", borderColor: "#80664e" },
+  contractHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 },
+  contractReward: { color: COLORS.accent, fontSize: 12, fontVariant: ["tabular-nums"] },
+  tabMark: { width: 13, height: 10, borderWidth: 1, borderColor: COLORS.muted },
+  tabMarkChart: { width: 11, height: 11, borderRadius: 6 },
+  tabMarkShip: { width: 9, height: 9, transform: [{ rotate: "45deg" }] },
+  tabMarkActive: { borderColor: COLORS.accent },
   flexOne: { flex: 1 },
   safeArea: { flex: 1, backgroundColor: COLORS.void, paddingTop: Platform.OS === "android" ? 18 : 0 },
   bootScreen: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.void, padding: 28 },
-  bootMark: { width: 68, height: 68, borderWidth: 1, borderColor: COLORS.lime, alignItems: "center", justifyContent: "center", transform: [{ rotate: "45deg" }] },
-  bootMarkText: { color: COLORS.lime, fontWeight: "900", fontSize: 30, transform: [{ rotate: "-45deg" }] },
-  bootTitle: { color: COLORS.cream, fontWeight: "900", fontSize: 40, letterSpacing: -2, marginTop: 36 },
+  bootMark: { width: 68, height: 68, borderWidth: 1, borderColor: COLORS.accent, alignItems: "center", justifyContent: "center", transform: [{ rotate: "45deg" }] },
+  bootMarkText: { color: COLORS.accent, fontWeight: "900", fontSize: 30, transform: [{ rotate: "-45deg" }] },
+  bootTitle: { color: COLORS.text, fontWeight: "900", fontSize: 40, letterSpacing: -2, marginTop: 36 },
   bootSubtitle: { color: COLORS.muted, fontSize: 10, letterSpacing: 2, marginTop: 8, textAlign: "center" },
   bootSpinner: { marginTop: 54 },
-  bootStatus: { color: COLORS.lime, fontSize: 10, letterSpacing: 1.5, marginTop: 16 },
-  appHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end", paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12, borderBottomWidth: 1, borderColor: COLORS.line },
-  appEyebrow: { color: COLORS.lime, fontSize: 8, letterSpacing: 1.4, fontWeight: "700" },
-  appTitle: { color: COLORS.cream, fontSize: 34, letterSpacing: -1.8, lineHeight: 36, fontWeight: "900" },
-  gpsBadge: { width: 116, minHeight: 36, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 8, paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 7 },
-  signalDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.lime },
-  signalDotTraining: { backgroundColor: COLORS.amber },
-  gpsText: { flex: 1, color: COLORS.muted, fontSize: 8, lineHeight: 11, letterSpacing: .6 },
-  statusBar: { flexDirection: "row", borderBottomWidth: 1, borderColor: COLORS.line },
-  stat: { flex: 1, paddingHorizontal: 13, paddingVertical: 10, borderRightWidth: 1, borderColor: COLORS.line },
-  statLabel: { color: COLORS.muted, fontSize: 8, letterSpacing: 1.1 },
-  statValue: { color: COLORS.cream, fontSize: 14, fontWeight: "800", marginTop: 3 },
-  warning: { color: COLORS.coral },
-  noticeBar: { minHeight: 36, justifyContent: "center", borderLeftWidth: 3, borderLeftColor: COLORS.amber, backgroundColor: "#1b160d", paddingHorizontal: 13, marginHorizontal: 16, marginTop: 10 },
-  noticeText: { color: COLORS.amber, fontSize: 9, letterSpacing: .8, fontWeight: "700" },
-  testContentNotice: { borderWidth: 1, borderColor: COLORS.amber, backgroundColor: "#1b160d", paddingHorizontal: 10, paddingVertical: 8, marginBottom: 10 },
-  testContentNoticeText: { color: COLORS.amber, fontSize: 8, lineHeight: 12, letterSpacing: .7, fontWeight: "800" },
+  bootStatus: { color: COLORS.accent, fontSize: 10, letterSpacing: 1.5, marginTop: 16 },
+  appHeader: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12, borderBottomWidth: 1, borderColor: COLORS.frame },
+  appEyebrow: { color: COLORS.muted, fontSize: 11, marginTop: 2 },
+  appTitle: { color: COLORS.text, fontSize: 28, letterSpacing: 1.4, fontWeight: "900" },
+  gpsBadge: { maxWidth: "100%", minHeight: 34, paddingHorizontal: 8, paddingVertical: 5, flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: COLORS.line },
+  signalDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.signal },
+  signalDotTraining: { backgroundColor: COLORS.accent },
+  gpsText: { color: COLORS.muted, flexShrink: 1, fontSize: 11 },
+  statusBar: { flexDirection: "row", flexWrap: "wrap", backgroundColor: COLORS.panel, borderBottomWidth: 1, borderColor: COLORS.line },
+  stat: { flex: 1, minWidth: 88, paddingHorizontal: 10, paddingVertical: 9, borderRightWidth: 1, borderColor: COLORS.line },
+  statLabel: { color: COLORS.muted, fontSize: 10, letterSpacing: .6 },
+  statValue: { color: COLORS.text, fontSize: 15, fontVariant: ["tabular-nums"], fontWeight: "800", marginTop: 3 },
+  warning: { color: COLORS.alert },
+  noticeBar: { minHeight: 38, justifyContent: "center", borderBottomWidth: 1, borderColor: COLORS.line, paddingVertical: 7, marginHorizontal: 16 },
+  noticeText: { color: COLORS.signal, fontSize: 12, fontWeight: "600" },
+  testContentNotice: { borderWidth: 1, borderColor: "#80664e", backgroundColor: COLORS.contract, padding: 10, marginBottom: 10, gap: 5 },
+  testContentNoticeText: { color: COLORS.text, fontSize: 12, lineHeight: 18 },
   scrollContent: { padding: 16, paddingBottom: 30 },
   sectionHeader: { marginTop: 6, marginBottom: 10 },
-  eyebrow: { color: COLORS.lime, fontSize: 8, letterSpacing: 1.3, fontWeight: "800" },
-  sectionTitle: { color: COLORS.cream, fontSize: 22, lineHeight: 25, fontWeight: "900", letterSpacing: -.7, marginTop: 2 },
+  eyebrow: { color: COLORS.signal, fontSize: 10, letterSpacing: .6, fontWeight: "700" },
+  sectionTitle: { color: COLORS.text, fontSize: 24, fontWeight: "800", letterSpacing: -.45, marginTop: 2 },
   panel: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 12, marginBottom: 16 },
-  radar: { alignSelf: "center", width: "100%", overflow: "hidden", backgroundColor: COLORS.deep, borderWidth: 1, borderColor: COLORS.line },
-  radarRing: { position: "absolute", left: "50%", top: "50%", borderRadius: 999, borderWidth: 1, borderColor: "#284332" },
-  radarAxisHorizontal: { position: "absolute", top: "50%", left: 12, right: 12, height: 1, backgroundColor: "#203629" },
-  radarAxisVertical: { position: "absolute", left: "50%", top: 12, bottom: 12, width: 1, backgroundColor: "#203629" },
-  shipMarker: { position: "absolute", left: "50%", top: "50%", width: 46, height: 46, marginLeft: -23, marginTop: -23, alignItems: "center", justifyContent: "center" },
-  shipMarkerGlyph: { color: COLORS.cream, fontSize: 19, textShadowColor: COLORS.cream, textShadowRadius: 8 },
-  shipMarkerLabel: { color: COLORS.muted, fontSize: 7, letterSpacing: 1 },
-  portNode: { position: "absolute", width: 56, minHeight: 46, alignItems: "center", justifyContent: "center" },
-  portDiamond: { width: 11, height: 11, borderWidth: 1, borderColor: COLORS.amber, backgroundColor: COLORS.deep, transform: [{ rotate: "45deg" }] },
-  portDiamondVisited: { backgroundColor: COLORS.amber },
-  portDiamondSelected: { width: 15, height: 15, borderColor: COLORS.lime, backgroundColor: COLORS.lime, shadowColor: COLORS.lime, shadowOpacity: 1, shadowRadius: 8, elevation: 5 },
-  portNodeLabel: { color: COLORS.muted, fontSize: 7, marginTop: 5, fontWeight: "700" },
-  portNodeLabelSelected: { color: COLORS.cream },
+  radar: { alignSelf: "center", overflow: "hidden", backgroundColor: COLORS.deep, borderWidth: 1, borderColor: "#466178" },
+  radarRing: { position: "absolute", left: "50%", top: "50%", borderRadius: 999, borderWidth: 1, borderColor: "#466178" },
+  radarAxisHorizontal: { position: "absolute", top: "50%", left: 12, right: 12, height: 1, backgroundColor: "#31465b" },
+  radarAxisVertical: { position: "absolute", left: "50%", top: 12, bottom: 12, width: 1, backgroundColor: "#31465b" },
+  shipMarker: { position: "absolute", zIndex: 2, width: 24, height: 24, marginLeft: -12, marginTop: -12, alignItems: "center", justifyContent: "center" },
+  portNode: { position: "absolute", zIndex: 3, width: 56, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  portDiamond: { width: 10, height: 10, borderWidth: 1, borderColor: COLORS.signal, backgroundColor: COLORS.deep, transform: [{ rotate: "45deg" }] },
+  portDiamondVisited: { backgroundColor: COLORS.signal },
+  portDiamondSelected: { width: 13, height: 13, borderColor: COLORS.accent, backgroundColor: COLORS.accent },
+  portNodeLabel: { color: COLORS.muted, backgroundColor: COLORS.deep, fontSize: 10, marginTop: 5, fontWeight: "700" },
+  portNodeLabelSelected: { color: COLORS.accent },
   destinationCard: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 16, marginBottom: 22 },
   destinationTopline: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  destinationName: { color: COLORS.cream, fontSize: 24, fontWeight: "900", letterSpacing: -.7, marginTop: 3 },
+  destinationName: { color: COLORS.text, fontSize: 24, fontWeight: "900", letterSpacing: -.7, marginTop: 3 },
   callsign: { color: COLORS.muted, fontSize: 10, letterSpacing: 1.1, marginTop: 4 },
   rangeBox: { minWidth: 74, alignItems: "flex-end" },
-  rangeLabel: { color: COLORS.muted, fontSize: 8, letterSpacing: 1 },
-  rangeValue: { color: COLORS.amber, fontSize: 15, fontWeight: "900", marginTop: 3 },
-  limeText: { color: COLORS.lime },
+  rangeLabel: { color: COLORS.muted, fontSize: 10, letterSpacing: .6 },
+  rangeValue: { color: COLORS.signal, fontSize: 15, fontWeight: "800", marginTop: 3 },
+  limeText: { color: COLORS.accent },
   rumorGrid: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: COLORS.line, marginVertical: 15, paddingVertical: 6 },
   rumorRow: { minHeight: 35, flexDirection: "row", alignItems: "center", gap: 8 },
-  rumorText: { flex: 1, color: COLORS.cream, fontSize: 9, letterSpacing: .4 },
+  rumorText: { flex: 1, color: COLORS.text, fontSize: 9, letterSpacing: .4 },
   band: { borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 7, paddingVertical: 4 },
-  bandCheap: { borderColor: COLORS.limeDark, backgroundColor: "#17210d" },
-  bandExpensive: { borderColor: "#824133", backgroundColor: "#23100c" },
+  bandCheap: { borderColor: COLORS.frame, backgroundColor: "#172a36" },
+  bandExpensive: { borderColor: "#8a5050", backgroundColor: "#281e28" },
   bandText: { color: COLORS.muted, fontSize: 7, fontWeight: "800", letterSpacing: .6 },
   trainingRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
-  trainingTitle: { color: COLORS.cream, fontSize: 10, fontWeight: "800", letterSpacing: .6 },
-  trainingCopy: { color: COLORS.muted, fontSize: 9, marginTop: 2 },
-  button: { minHeight: 46, borderWidth: 1, borderColor: COLORS.lime, backgroundColor: COLORS.lime, alignItems: "center", justifyContent: "center", paddingHorizontal: 14, marginTop: 8 },
+  trainingTitle: { color: COLORS.text, fontSize: 12, fontWeight: "800" },
+  trainingCopy: { color: COLORS.muted, fontSize: 12, marginTop: 2 },
+  button: { minHeight: 46, borderWidth: 1, borderColor: COLORS.accent, backgroundColor: COLORS.accent, alignItems: "center", justifyContent: "center", paddingHorizontal: 14, marginTop: 8 },
   buttonCompact: { minHeight: 48, paddingHorizontal: 10, marginTop: 0 },
-  buttonLime: { backgroundColor: COLORS.lime },
+  buttonLime: { backgroundColor: COLORS.accent },
   buttonGhost: { backgroundColor: "transparent", borderColor: COLORS.line },
-  buttonDanger: { backgroundColor: COLORS.coral, borderColor: COLORS.coral },
-  buttonDisabled: { opacity: .28 },
-  buttonPressed: { opacity: .72, transform: [{ scale: .985 }] },
-  buttonLabel: { color: COLORS.cream, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  buttonDanger: { backgroundColor: COLORS.alert, borderColor: COLORS.alert },
+  buttonDisabled: { backgroundColor: "transparent", borderColor: COLORS.line, opacity: .78 },
+  buttonPressed: { opacity: .82 },
+  buttonLabel: { color: COLORS.text, fontSize: 12, fontWeight: "700", textAlign: "center" },
   buttonLabelDark: { color: COLORS.void },
   newsRow: { minHeight: 61, flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderColor: COLORS.line, gap: 11 },
-  newsSignal: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.lime },
-  newsSignalHot: { backgroundColor: COLORS.coral },
-  newsHeadline: { color: COLORS.cream, fontSize: 10, fontWeight: "800", letterSpacing: .4 },
+  newsSignal: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.accent },
+  newsSignalHot: { backgroundColor: COLORS.alert },
+  newsHeadline: { color: COLORS.text, fontSize: 10, fontWeight: "800", letterSpacing: .4 },
   newsMeta: { color: COLORS.muted, fontSize: 8, letterSpacing: .7, marginTop: 4 },
   chevron: { color: COLORS.muted, fontSize: 24 },
   emptyCard: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 28, alignItems: "center" },
-  emptyGlyph: { color: COLORS.amber, fontSize: 42 },
-  emptyTitle: { color: COLORS.cream, fontSize: 18, fontWeight: "900", marginTop: 12 },
+  emptyGlyph: { color: COLORS.accent, fontSize: 42 },
+  emptyTitle: { color: COLORS.text, fontSize: 18, fontWeight: "900", marginTop: 12 },
   emptyCopy: { color: COLORS.muted, fontSize: 11, lineHeight: 17, textAlign: "center", marginVertical: 12 },
   marketPanel: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 12 },
   marketBanner: { flexDirection: "row", justifyContent: "space-between", backgroundColor: COLORS.panelLift, borderWidth: 1, borderColor: COLORS.line, padding: 12, marginBottom: 7 },
   marketBannerRight: { alignItems: "flex-end" },
   marketBannerLabel: { color: COLORS.muted, fontSize: 7, letterSpacing: 1.2 },
-  marketBannerValue: { color: COLORS.lime, fontSize: 12, fontWeight: "900", marginTop: 3 },
+  marketBannerValue: { color: COLORS.accent, fontSize: 12, fontWeight: "900", marginTop: 3 },
   marketRow: { borderTopWidth: 1, borderColor: COLORS.line, gap: 8, paddingVertical: 12 },
   commodityIdentity: { flex: 1.25, flexDirection: "row", alignItems: "center", gap: 8 },
   commodityBadge: { width: 30, height: 30, borderWidth: 1, borderColor: COLORS.line, alignItems: "center", justifyContent: "center" },
-  commodityBadgeText: { color: COLORS.lime, fontSize: 8, fontWeight: "900" },
-  commodityName: { color: COLORS.cream, fontSize: 14, fontWeight: "800" },
+  commodityBadgeText: { color: COLORS.accent, fontSize: 8, fontWeight: "900" },
+  commodityName: { color: COLORS.text, fontSize: 14, fontWeight: "800" },
   commodityMeta: { color: COLORS.muted, fontSize: 12, marginTop: 4 },
   tradeButtons: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: 8 },
-  orderQuantity: { minWidth: 54, minHeight: 48, color: COLORS.cream, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 8 },
+  orderQuantity: { minWidth: 54, minHeight: 48, color: COLORS.text, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 8 },
   portListRow: { minHeight: 48, justifyContent: "center", borderTopWidth: 1, borderColor: COLORS.line, paddingVertical: 8 },
   receipt: { gap: 7, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel },
-  receiptTitle: { color: COLORS.lime, fontSize: 14, fontWeight: "800" },
-  receiptLine: { color: COLORS.cream, fontSize: 13 },
+  receiptTitle: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
+  receiptLine: { color: COLORS.muted, fontSize: 13, lineHeight: 19 },
   spreadNote: { color: COLORS.muted, fontSize: 8, lineHeight: 13, marginTop: 12 },
-  shipHero: { height: 220, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.deep, alignItems: "center", justifyContent: "center", marginBottom: 12, overflow: "hidden" },
+  shipHero: { height: 164, borderWidth: 1, borderColor: "#466178", backgroundColor: COLORS.deep, alignItems: "center", justifyContent: "center", marginBottom: 12, overflow: "hidden" },
   shipSilhouette: { width: 190, height: 92, alignItems: "center", justifyContent: "center" },
-  shipNose: { position: "absolute", right: 7, width: 0, height: 0, borderTopWidth: 18, borderBottomWidth: 18, borderLeftWidth: 42, borderTopColor: "transparent", borderBottomColor: "transparent", borderLeftColor: COLORS.cream },
-  shipBody: { position: "absolute", right: 45, width: 105, height: 34, borderRadius: 18, backgroundColor: "#a6ad9b", borderWidth: 2, borderColor: COLORS.cream },
-  shipWingLeft: { position: "absolute", left: 35, top: 11, width: 88, height: 23, backgroundColor: "#657467", transform: [{ skewX: "-28deg" }] },
-  shipWingRight: { position: "absolute", left: 35, bottom: 11, width: 88, height: 23, backgroundColor: "#657467", transform: [{ skewX: "28deg" }] },
-  engineGlow: { position: "absolute", left: 22, width: 28, height: 20, borderRadius: 10, backgroundColor: COLORS.lime, shadowColor: COLORS.lime, shadowOpacity: 1, shadowRadius: 14, elevation: 8 },
-  shipClass: { position: "absolute", bottom: 14, color: COLORS.muted, fontSize: 8, letterSpacing: 1 },
+  shipNose: { position: "absolute", right: 7, width: 0, height: 0, borderTopWidth: 18, borderBottomWidth: 18, borderLeftWidth: 42, borderTopColor: "transparent", borderBottomColor: "transparent", borderLeftColor: COLORS.text },
+  shipBody: { position: "absolute", right: 45, width: 105, height: 34, borderRadius: 14, backgroundColor: "#23415a", borderWidth: 1, borderColor: COLORS.signal },
+  shipWingLeft: { position: "absolute", left: 35, top: 11, width: 88, height: 23, backgroundColor: "#456680", transform: [{ skewX: "-28deg" }] },
+  shipWingRight: { position: "absolute", left: 35, bottom: 11, width: 88, height: 23, backgroundColor: "#456680", transform: [{ skewX: "28deg" }] },
+  engineGlow: { position: "absolute", left: 22, width: 28, height: 20, borderRadius: 10, backgroundColor: COLORS.accent, shadowColor: COLORS.accent, shadowOpacity: 1, shadowRadius: 14, elevation: 8 },
+  shipClass: { position: "absolute", bottom: 12, color: COLORS.muted, fontSize: 10, letterSpacing: .6 },
   shipStats: { flexDirection: "row", borderWidth: 1, borderColor: COLORS.line, marginBottom: 20 },
   manifestRow: { minHeight: 45, flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderColor: COLORS.line },
-  manifestSymbol: { width: 36, color: COLORS.lime, fontSize: 9, fontWeight: "900" },
-  manifestName: { flex: 1, color: COLORS.cream, fontSize: 11 },
+  manifestSymbol: { width: 36, color: COLORS.accent, fontSize: 9, fontWeight: "900" },
+  manifestName: { flex: 1, color: COLORS.text, fontSize: 11 },
   manifestQuantity: { color: COLORS.muted, fontSize: 11, fontWeight: "900" },
   upgradeCard: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 14, marginBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 },
-  upgradeTitle: { color: COLORS.cream, fontSize: 10, fontWeight: "900", letterSpacing: .4 },
+  upgradeTitle: { color: COLORS.text, fontSize: 13, fontWeight: "800" },
   upgradeCopy: { color: COLORS.muted, fontSize: 12, marginTop: 5 },
-  tabBar: { height: 67, flexDirection: "row", backgroundColor: COLORS.deep, borderTopWidth: 1, borderColor: COLORS.line, paddingBottom: Platform.OS === "android" ? 6 : 0 },
+  tabBar: { minHeight: 62, flexDirection: "row", backgroundColor: COLORS.deep, borderTopWidth: 1, borderColor: COLORS.frame, paddingBottom: Platform.OS === "android" ? 6 : 0 },
   tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 3, borderTopWidth: 2, borderTopColor: "transparent" },
-  tabActive: { borderTopColor: COLORS.lime, backgroundColor: "#0c1915" },
-  tabGlyph: { color: COLORS.muted, fontSize: 18 },
-  tabLabel: { color: COLORS.muted, fontSize: 8, fontWeight: "800", letterSpacing: 1 },
-  tabTextActive: { color: COLORS.lime },
+  tabActive: { borderTopColor: COLORS.accent, backgroundColor: COLORS.panelLift },
+  tabLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "700", letterSpacing: .7 },
+  tabTextActive: { color: COLORS.accent },
   modalScrim: { flex: 1, justifyContent: "center", padding: 22, backgroundColor: "rgba(0,0,0,.78)" },
-  encounterCard: { borderWidth: 2, borderColor: COLORS.coral, backgroundColor: COLORS.panel, padding: 22 },
-  alertCode: { color: COLORS.coral, fontSize: 8, fontWeight: "900", letterSpacing: 1.1 },
-  encounterTitle: { color: COLORS.cream, fontSize: 30, fontWeight: "900", marginTop: 5 },
+  encounterCard: { borderWidth: 2, borderColor: COLORS.alert, backgroundColor: COLORS.panel, padding: 22 },
+  alertCode: { color: COLORS.alert, fontSize: 8, fontWeight: "900", letterSpacing: 1.1 },
+  encounterTitle: { color: COLORS.text, fontSize: 30, fontWeight: "900", marginTop: 5 },
   encounterCopy: { color: COLORS.muted, fontSize: 12, lineHeight: 19, marginTop: 10 },
   encounterActions: { marginTop: 16 },
 });
