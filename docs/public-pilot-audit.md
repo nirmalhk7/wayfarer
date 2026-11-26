@@ -1,6 +1,6 @@
-# Washington Park public pilot desk audit
+# Historical Washington Park public pilot desk audit
 
-**Decision on 2026-11-26** — Leave the public preset disabled on web and Android. Washington Park is a public pedestrian setting worth field review. The source checks below leave two distinct, accessible docking sites unconfirmed. The public coordinates are for desk review only.
+**Decision on 2026-11-26** — Leave the public preset disabled in the legacy Denver prototype. Washington Park is a public pedestrian setting worth field review. The source checks below leave two distinct, accessible docking sites unconfirmed. The public coordinates are for desk review only.
 
 ## Source checks
 

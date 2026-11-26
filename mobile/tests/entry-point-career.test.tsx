@@ -71,9 +71,8 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
   const mounted = await render(<RegisteredApp />);
   expect((await screen.findByRole("switch", { name: "Training simulator" })).props.value).toBe(true);
-  expect(Location.requestForegroundPermissionsAsync).toHaveBeenCalledTimes(1);
-  await waitFor(async () => expect(await campaign("live")).not.toBeNull());
-  const liveBefore = await campaign("live");
+  expect(Location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
+  expect(await campaign("live")).toBeNull();
 
   await tab("Station");
   expect(screen.getByText("Market encrypted")).toBeTruthy();
@@ -127,7 +126,7 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   expect(screen.getAllByText("0/12").length).toBeGreaterThan(0);
   expect(screen.getByText("44 CR")).toBeTruthy();
   await waitFor(async () => expect((await campaign("training"))?.player.cargoCapacity).toBe(12));
-  expect(await campaign("live")).toEqual(liveBefore);
+  expect(await campaign("live")).toBeNull();
 
   await mounted.unmount();
   await render(<RegisteredApp />);
@@ -202,6 +201,9 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   await AsyncStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(live));
   await persistDockingCoordinator(createDockingCoordinator({ id: live.ports[0].id, coords: origin }));
   await render(<RegisteredApp />);
+  const trainingToggle = await screen.findByRole("switch", { name: "Training simulator" });
+  expect(trainingToggle.props.value).toBe(true);
+  await fireEvent(trainingToggle, "valueChange", false);
   await screen.findByRole("button", { name: "Start live navigation" });
   expect(await AsyncStorage.getItem(LEGACY_STORAGE_KEY)).toBeNull();
   expect(await AsyncStorage.getItem(DOCKING_SESSION_STORAGE_KEY)).toBeNull();
@@ -238,6 +240,10 @@ test("the registered app fulfils the local contract once across failed save, ret
   const mounted = await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
   await tab("Chart");
+  expect(screen.getByRole("header", { name: "North Coast chart" })).toBeTruthy();
+  expect(screen.getByText(/Humboldt and Del Norte counties/)).toBeTruthy();
+  expect(screen.getByText("Simulated ship · Humboldt County")).toBeTruthy();
+  expect(screen.getByText(/County membership does not qualify a ship to dock/)).toBeTruthy();
   expect(screen.getByText(/Public pilot preset unavailable/)).toBeTruthy();
   expect(screen.getByText(/Do not travel to these points/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /enable public pilot/i })).toBeNull();
@@ -268,8 +274,10 @@ test("the registered app fulfils the local contract once across failed save, ret
   expect(screen.getByRole("button", { name: "Deliver reserved cargo" }).props.accessibilityState.disabled).toBe(true);
   await tab("Chart");
   await press("Port list · 1 of 7 visited");
-  await press(/^Select Cinder Exchange, unvisited/);
+  await press(/^Select Cinder Exchange, unvisited, Del Norte County/);
   expect(screen.getByTestId("vista-flight")).toBeTruthy();
+  expect(screen.getByText(/CND-04 · Del Norte County · Approach/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Enter station market" })).toBeNull();
   expect(screen.getByRole("header", { name: "Cinder Exchange" })).toBeTruthy();
   await press("Simulate approach to Cinder Exchange");
   await press("PAY");
@@ -310,4 +318,27 @@ test("the registered app fulfils the local contract once across failed save, ret
   expect(screen.queryByText("Delivered · 150 cr paid")).toBeNull();
   expect(network).not.toHaveBeenCalled();
   expect(animated.mock.calls.some(([, config]) => config.duration === 270)).toBe(false);
+});
+
+test("the atlas starts without permission and an explicit denied Live start preserves a Training berth", async () => {
+  const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
+  const permissionCalls = jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls.length;
+  const reads = jest.mocked(Location.getCurrentPositionAsync).mock.calls.length;
+  await render(<RegisteredApp />);
+  await screen.findByRole("switch", { name: "Training simulator" });
+  expect(screen.getByText(/WFR-00 · Humboldt County · Approach/)).toBeTruthy();
+  await press("Simulate approach to Wayfarer Freeport");
+  await press("PAY");
+  expect(screen.getByText(/WFR-00 · Humboldt County · Docked/)).toBeTruthy();
+  await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", false);
+  expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls);
+  await press("Start live navigation");
+  await screen.findByText("LOCATION DENIED · LIVE NAVIGATION REMAINS PAUSED");
+  expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls + 1);
+  expect(jest.mocked(Location.getCurrentPositionAsync).mock.calls).toHaveLength(reads);
+  await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", true);
+  expect(screen.getByTestId("vista-docked")).toBeTruthy();
+  await press("Enter station market");
+  expect(screen.getByText("Cinder Reserve Run")).toBeTruthy();
+  expect(await campaign("live")).toBeNull();
 });

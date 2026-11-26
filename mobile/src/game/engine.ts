@@ -36,6 +36,7 @@ export type PlayerState = {
 export type DeliveryState = { status: "active" | "delivered"; loaded: number };
 export type GameState = {
   version: 1;
+  mapId?: string;
   seed: string;
   origin: Coordinates;
   ports: Starport[];

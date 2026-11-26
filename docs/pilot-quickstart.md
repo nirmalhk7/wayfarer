@@ -1,42 +1,26 @@
-# Wayfarer local pilot quickstart
+# North Coast Training pilot
 
-## Apply the handoff
+The chart maps seven fictional stations across Humboldt and Del Norte counties. County membership is a chart label. Docking qualification separately governs access to each station market. The catalog is generalized for games and thematic mapping. It is unsuitable for navigation or legal boundary determinations.
 
-Use a clean checkout of GitHub main at `659f49700a52cd1945520b49387d5b311cd7449f`.
+## Reproduce the Android playthrough
 
-```sh
-git switch -c wayfarer-local-pilot
-git apply --check /path/to/wayfarer-pilot.patch
-git apply /path/to/wayfarer-pilot.patch
-```
+From the repository root, install once with `npm --prefix mobile ci`. Run `npm test` to test the loopback API and registered Android entry point with mocked native services. On a configured device or emulator, run `npm --prefix mobile run android`.
 
-Install the locked dependencies once using Node.js 22.13 or later. The checks that follow use the installed dependencies.
+1. Start on **Bridge** in Training. It requests no location permission on launch. Open **Chart**, then the port list, and confirm the county labels.
+2. Return to Wayfarer Freeport in Humboldt County. Simulate the approach and resolve the encounter if prompted. Enter the station and accept **Cinder Reserve Run** at the contract desk. Buy two Ion Fuel at the trade counter.
+3. Plot Cinder Exchange in Del Norte County from the chart. The destination’s county is visible on approach, while delivery stays locked. Simulate the 10-minute qualification and finish any encounter, then deliver from its contract desk for 150 credits.
+4. Check the reward after relaunch. Open **Hold** to buy an upgrade. Use **Reset Training game data** only when you are ready to reset that local campaign.
 
-```sh
-npm ci
-npm --prefix mobile ci
-```
+Do not travel to any Training pin or generated Live test point. No North Coast stations have been cleared for physical arrival. A physical pilot requires independently verified public stops and routes, field checks, and on-device docking tests.
 
-## Verify and play locally
+## Boundary release and backend
+
+The source is the U.S. Census Bureau’s [2025 Cartographic Boundary Files](https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.2025.html), [national counties shapefile at 1:500,000](https://www2.census.gov/geo/tiger/GENZ2025/shp/cb_2025_us_county_500k.zip). The packaged release is `north-coast-2025-cb500k.v1`. The importer checks the downloaded archive’s SHA-256, selects GEOIDs `06015` and `06023`, and outputs WGS 84 GeoJSON with six decimal places. It preserves multipart polygons and uses no extra simplification.
 
 ```sh
-npm test
-npm run typecheck
-npm run lint
-npm --prefix mobile run check
-(cd mobile && CI=1 EXPO_OFFLINE=1 EXPO_NO_TELEMETRY=1 ./node_modules/.bin/expo export --platform android)
+curl -fLO https://www2.census.gov/geo/tiger/GENZ2025/shp/cb_2025_us_county_500k.zip
+python tools/import-north-coast.py cb_2025_us_county_500k.zip
+git diff --exit-code -- mobile/src/territories/north-coast.json
 ```
 
-For the standalone browser smoke test, install Python Playwright and a Chromium runtime once. Run the following from the repository root after `npm test`. Set `WAYFARER_TEST_CHROMIUM` to an existing Chromium executable if using a system binary. The test serves the production route on local port 4197, blocks outbound requests, and disconnects after initial load.
-
-```sh
-python tests/pilot-offline.py
-```
-
-Set `WAYFARER_SCREENSHOTS_DIR` to save the browser chart, contract and upgraded ship manifest from the synthetic walkthrough.
-
-To play manually, run `npm run start -- --port 4197` and open `http://127.0.0.1:4197/`. For the native Android app, use `npm --prefix mobile run android` with a local Android SDK and emulator or device. The Metro export verifies JavaScript bundling. Installing and running the native app requires the Android tools.
-
-In Training, start at Wayfarer Freeport and accept **Cinder Reserve Run** in the market. On Android, simulate qualification at the freeport and resolve any encounter before accepting. Buy two Ion Fuel, select Cinder Exchange, simulate arrival, qualify or request docking, and deliver for 150 credits. Check the completed receipt after restart. From the ship's local data controls, reset the disposable Training campaign and confirm the offer returns.
-
-The clients display generated test points for simulation. The public preset is unavailable pending the checks in [the desk audit](public-pilot-audit.md). The browser smoke test verifies play after connection loss and reload from loopback. A disconnected cold web launch is outside the test.
+Use GDAL 3.10.3 for byte-for-byte regeneration. The app and local API share the same file. From the root, `npm run backend` serves it at `GET /v1/territories` and reports readiness at `GET /healthz`. The backend accepts no player data, uploads or location queries. There is no login or save sync.

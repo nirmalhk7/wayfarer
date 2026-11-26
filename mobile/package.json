@@ -13,7 +13,8 @@
     "expo-task-manager": "~57.0.9",
     "react": "19.2.3",
     "react-native": "0.86.2",
-    "react-native-safe-area-context": "~5.7.0"
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-svg": "15.15.4"
   },
   "devDependencies": {
     "@testing-library/react-native": "^14.0.1",
@@ -30,8 +31,6 @@
     "android": "expo run:android",
     "android:release": "cd android && ./gradlew assembleRelease",
     "check": "npm run typecheck && npm test",
-    "ios": "expo run:ios",
-    "web": "expo start --web",
     "test": "npm run test:pure && npm run test:ui",
     "test:pure": "node --import tsx --test tests/*.test.ts",
     "test:ui": "jest --runInBand --passWithNoTests",

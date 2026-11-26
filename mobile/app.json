@@ -7,9 +7,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "ios": {
-      "supportsTablet": true
-    },
     "android": {
       "package": "com.nirmalhk7.wayfarer",
       "permissions": [
@@ -29,9 +26,6 @@
       },
       "predictiveBackGestureEnabled": false
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    },
     "plugins": [
       "./plugins/withGradleTestCompatibility.cjs",
       [
@@ -39,12 +33,14 @@
         {
           "locationWhenInUsePermission": "Wayfarer uses your location to generate nearby starports and verify docking.",
           "locationAlwaysAndWhenInUsePermission": "Wayfarer uses your location to verify docking while you approach your selected starport.",
-          "isIosBackgroundLocationEnabled": true,
           "isAndroidBackgroundLocationEnabled": true,
           "isAndroidForegroundServiceEnabled": true,
           "androidForegroundServiceIcon": "./assets/android-icon-monochrome.png"
         }
       ]
+    ],
+    "platforms": [
+      "android"
     ]
   }
 }

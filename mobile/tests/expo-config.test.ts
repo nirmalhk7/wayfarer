@@ -9,8 +9,9 @@ test("resolved Android config allows persisted geofence work after reboot", () =
     ["expo", "config", "--type", "public", "--json"],
     { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" },
   );
-  const config = JSON.parse(output) as { android?: { permissions?: string[] } };
+  const config = JSON.parse(output) as { platforms?: string[]; android?: { permissions?: string[] } };
 
+  assert.deepEqual(config.platforms, ["android"]);
   assert.ok(config.android?.permissions?.includes("RECEIVE_BOOT_COMPLETED"));
   assert.ok(config.android?.permissions?.includes("POST_NOTIFICATIONS"));
 });

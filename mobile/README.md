@@ -1,34 +1,31 @@
-# Wayfarer Android MVP
+# Wayfarer Android
 
-Native Android location game built with Expo and React Native. A campaign uses the
-player’s first GPS fix to generate six walkable starports around a local freeport.
-These procedural coordinates are synthetic test content, not verified public POIs
-or a claim that any generated place is safe or appropriate to visit.
+Native Android space-trading game built with Expo and React Native. The Wayward
+flies between fictional stations. Training opens on the North Coast chart of
+Humboldt and Del Norte counties, using the bundled Census boundary release.
+Station pins in Training are fictional. Public field stations are unavailable.
 
 ## Play loop
 
-- Follow approximate market rumors on the star chart.
-- Select a starport, move fully within its 120-metre perimeter, and remain nearby,
-  accurate, and stationary for 10 observed minutes. Docking completes automatically.
-- Buy and sell four commodities using exact prices available only while docked.
-- Expand the cargo hold or reinforce the hull.
-- Resolve pirate, customs, and distress encounters.
-- Resume from an offline save after closing the app.
+- Follow market rumors and choose a station on the chart.
+- Simulate approach and docking qualification in Training, then visit the station
+  to trade cargo or complete a delivery. County membership alone grants no docking.
+- Expand the hold or reinforce the hull. Progress persists in a local save.
 
-Live and Training are isolated campaigns with separate saves, credits, cargo,
-markets, discoveries, and encounters. Training can simulate the 10-minute timer
-without changing live progress. It is selected automatically when foreground
-location permission is unavailable.
+Training starts without requesting location. Select Live and then **Start live
+navigation** to opt in to the legacy experimental mode. Live uses a first location
+fix to generate test points around a freeport. These points are unaudited. Do not
+travel to them. Experimental docking requires accurate, stationary time within
+the selected port’s 120-metre perimeter for 10 observed minutes.
 
-Foreground location supports qualification while Wayfarer remains visible.
-Background location is optional; on Android 11+ Wayfarer explains its use before
-opening system settings. Only bounded docking-session totals are stored. Raw
-location samples and travel trails are never persisted.
+Android background location is optional. Training and Live use separate local
+saves. Older Training saves retain their previous map until reset. Raw location
+samples and trails are never persisted.
 
 ## Run during development
 
 ```sh
-npm install
+npm ci
 npm run android
 ```
 

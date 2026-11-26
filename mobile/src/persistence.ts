@@ -16,6 +16,8 @@ import {
   type TradeReceipt,
 } from "./game/engine.ts";
 
+import { createNorthCoastTraining, NORTH_COAST_MAP_ID } from "./territories/northCoast";
+
 export const LIVE_STORAGE_KEY = "wayfarer.mobile.live.save.v2";
 export const TRAINING_STORAGE_KEY = "wayfarer.mobile.training.save.v2";
 export const LEGACY_STORAGE_KEY = "wayfarer.mobile.save.v1";
@@ -255,10 +257,15 @@ function readGameState(value: unknown): GameState | null {
     ports.push(port);
   }
 
+  const { mapId } = value;
+  if (mapId !== undefined && mapId !== NORTH_COAST_MAP_ID) return null;
   let base: GameState;
   try {
-    base = createGame({ origin, seed: value.seed });
+    base = mapId === NORTH_COAST_MAP_ID ? createNorthCoastTraining() : createGame({ origin, seed: value.seed });
   } catch {
+    return null;
+  }
+  if (base.seed !== value.seed || base.origin.latitude !== origin.latitude || base.origin.longitude !== origin.longitude) {
     return null;
   }
   if (ports.length !== base.ports.length) return null;
@@ -312,6 +319,7 @@ function readGameState(value: unknown): GameState | null {
   return {
     version: 1,
     seed: value.seed,
+    ...(base.mapId ? { mapId: base.mapId } : {}),
     origin,
     ports,
     dockedPortId,
@@ -427,7 +435,7 @@ export function encodeGameState(state: GameState): string {
   return JSON.stringify({ version: 2, game });
 }
 
-export function decodeGameState(raw: string | null | undefined): GameState | null {
+export function decodeGameState(raw: string | null | undefined, mode?: CampaignMode): GameState | null {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_SAVE_LENGTH) return null;
   let value: unknown;
   try {
@@ -438,5 +446,6 @@ export function decodeGameState(raw: string | null | undefined): GameState | nul
   if (!isRecord(value)) return null;
   if (value.version === 1) return migrateV1Save(value);
   if (value.version !== 2) return null;
-  return readGameState(value.game);
+  const game = readGameState(value.game);
+  return mode === "live" && game?.mapId ? null : game;
 }
