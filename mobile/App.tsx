@@ -6,11 +6,11 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
+  BackHandler,
   Modal,
   PermissionsAndroid,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Switch,
@@ -19,6 +19,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
 
 import {
   COMMODITIES,
@@ -94,6 +95,7 @@ import {
 } from "./src/ui/DockingStatusCard";
 
 import { COCKPIT as COLORS } from "./src/ui/cockpitTheme";
+import { FlightScene } from "./src/ui/FlightScene";
 
 const DEMO_ORIGIN: Coordinates = { latitude: 39.7392, longitude: -104.9903 };
 
@@ -108,7 +110,7 @@ async function clearLiveDockingData() {
 }
 const SCOPE_STARS = [[9,18], [28,14], [43,34], [64,12], [89,17], [91,57], [72,63], [18,78], [51,85], [88,88]];
 
-type Tab = "chart" | "market" | "ship";
+type Tab = "bridge" | "chart" | "market" | "ship";
 
 function Button({
   label,
@@ -117,6 +119,7 @@ function Button({
   disabled = false,
   tone = "lime",
   compact = false,
+  selected,
 }: {
   label: string;
   accessibilityLabel?: string;
@@ -124,12 +127,13 @@ function Button({
   disabled?: boolean;
   tone?: "lime" | "ghost" | "danger";
   compact?: boolean;
+  selected?: boolean;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled }}
+      accessibilityState={{ disabled, selected }}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [
@@ -147,13 +151,8 @@ function Button({
   );
 }
 
-function SectionHeader({ eyebrow, title }: { eyebrow: string; title: string }) {
-  return (
-    <View style={styles.sectionHeader}>
-      <Text style={styles.eyebrow}>{eyebrow}</Text>
-      <Text style={styles.sectionTitle}>{title}</Text>
-    </View>
-  );
+function SectionHeader({ title }: { title: string }) {
+  return <Text accessibilityRole="header" style={styles.sectionTitle}>{title}</Text>;
 }
 
 function Stat({ label, value, warning = false }: { label: string; value: string; warning?: boolean }) {
@@ -243,13 +242,12 @@ function StarChart({
             accessibilityState={{ selected }}
             key={port.id}
             onPress={() => onSelect(port.id)}
-            hitSlop={10}
             style={[
               styles.portNode,
               {
                 left: `${point.x}%`,
                 top: `${point.y}%`,
-                transform: [{ translateX: -28 }, { translateY: -22 }],
+                transform: [{ translateX: -28 }, { translateY: -24 }],
               },
             ]}
           >
@@ -392,9 +390,9 @@ function EncounterModal({ game, onResolve }: {
       ? "A customs cutter requests manifest verification and an expedited inspection fee."
       : "A damaged courier is broadcasting a weak rescue signal.";
   return (
-    <Modal transparent visible>
-      <View style={styles.modalScrim}>
-        <View style={styles.encounterCard}>
+    <Modal transparent visible onRequestClose={() => { /* Resolve the encounter before returning to flight. */ }}>
+      <ScrollView contentContainerStyle={styles.modalScrim}>
+        <View style={styles.encounterCard} accessibilityViewIsModal>
           <Text style={styles.alertCode}>PRIORITY CONTACT · SEVERITY {encounter.severity}</Text>
           <Text style={styles.encounterTitle}>{encounter.type.toUpperCase()}</Text>
           <Text style={styles.encounterCopy}>{copy}</Text>
@@ -413,7 +411,7 @@ function EncounterModal({ game, onResolve }: {
             )}
           </View>
         </View>
-      </View>
+      </ScrollView>
     </Modal>
   );
 }
@@ -449,6 +447,14 @@ async function requestBackgroundNotificationAccess() {
 }
 
 export default function App() {
+  return (
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <Wayfarer />
+    </SafeAreaProvider>
+  );
+}
+
+function Wayfarer() {
   const { width } = useWindowDimensions();
   const initialCampaigns = useMemo<Campaigns>(() => ({
     live: createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-live-v2" }),
@@ -468,7 +474,8 @@ export default function App() {
     live: createDockingCoordinator({ id: "port-0", coords: DEMO_ORIGIN }),
     training: createDockingCoordinator({ id: "port-0", coords: DEMO_ORIGIN }),
   });
-  const [tab, setTab] = useState<Tab>("chart");
+  const [tab, setTab] = useState<Tab>("bridge");
+  const [stationPanel, setStationPanel] = useState<"contracts" | "trade">("contracts");
   const [showPortList, setShowPortList] = useState(false);
   const [booting, setBooting] = useState(true);
   const [saveReady, setSaveReady] = useState(false);
@@ -515,9 +522,10 @@ export default function App() {
     [game.ports, selectedPortId],
   );
   const dockedPort = activeDockedPort(game, coordinator);
+  const berthed = dockedPort?.id === selectedPort.id;
   const selectedDistance = distanceMeters(position, selectedPort.position);
   const usedCargo = cargoUnits(game.player.cargo);
-  const radarSize = Math.min(width - 32, 390);
+  const radarSize = Math.min(width - 40, 440);
   const liveSession = coordinators.live.session;
   const liveAuthorizedSession = coordinators.live.authorizedDock?.session;
   const livePausedAt = liveAuthorizedSession?.pausedAt ?? liveSession.pausedAt;
@@ -525,6 +533,15 @@ export default function App() {
   const liveAuthorizedActiveAt = liveAuthorizedSession?.pausedAt === null
     ? liveAuthorizedSession.lastValidAt
     : null;
+
+  useEffect(() => {
+    const back = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (tab === "bridge") return false;
+      setTab("bridge");
+      return true;
+    });
+    return () => back.remove();
+  }, [tab]);
 
   useEffect(() => { campaignsRef.current = campaigns; }, [campaigns]);
   useEffect(() => { selectedPortIdsRef.current = selectedPortIds; }, [selectedPortIds]);
@@ -966,6 +983,12 @@ export default function App() {
     void Haptics.selectionAsync();
   }
 
+  function plotCourse(portId: string) {
+    if (contractSavingRef.current) return;
+    void selectPort(portId);
+    setTab("bridge");
+  }
+
   async function requestBackgroundAccess() {
     setShowBackgroundExplanation(false);
     try {
@@ -1011,7 +1034,7 @@ export default function App() {
     if (!dockedPort) return;
     mutate(
       (current) => trade(current, { portId: dockedPort.id, commodityId: quote.commodityId, side, quantity }),
-      side === "buy" ? "CARGO LOADED · SELECT A DESTINATION ON THE CHART" : "SALE COMPLETE · SEE YOUR TRADE RECEIPT",
+      side === "buy" ? "Cargo loaded. Plot your next course on the chart." : "Sale complete. Check your receipt.",
     );
   }
 
@@ -1036,42 +1059,101 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
       <View style={styles.appHeader}>
-        <View style={styles.brand}>
-          <View style={styles.brandMark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-            <View style={styles.shipPointer} />
-          </View>
-          <View style={styles.flexOne}>
-            <Text style={styles.appTitle} accessibilityRole="header">WAYFARER</Text>
-            <Text style={styles.appEyebrow}>Independent trader network</Text>
-          </View>
-        </View>
-        <View style={styles.gpsBadge}>
-          <View style={[styles.signalDot, mode === "training" && styles.signalDotTraining]} />
-          <Text numberOfLines={2} style={styles.gpsText}>
-            {mode === "training" ? "TRAINING CAMPAIGN" : locationStatus}
-          </Text>
-        </View>
+        <Text style={styles.appTitle}>WAYFARER</Text>
+        <Text style={styles.gpsText}>
+          {mode === "training" ? "Training" : locationStatus}
+        </Text>
       </View>
-
-      <View style={styles.statusBar}>
-        <Stat label="CREDITS" value={`${game.player.credits} CR`} />
-        <Stat label="CARGO" value={`${usedCargo}/${game.player.cargoCapacity}`} />
-        <Stat label="HULL" value={`${game.player.hull}/${game.player.maxHull}`} warning={game.player.hull < game.player.maxHull} />
-      </View>
-
-      <View accessibilityLiveRegion="polite" style={styles.noticeBar}>
-        <Text numberOfLines={2} style={styles.noticeText}>{notice}</Text>
-      </View>
-
       <ScrollView
         key={tab}
+        style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
       >
-        {tab === "chart" && (
+        {tab === "bridge" && (
           <>
-            <SectionHeader eyebrow="NAVIGATOR" title="LOCAL STAR CHART" />
+            <FlightScene
+              vista={berthed ? "docked" : "flight"}
+              callsign={selectedPort.callsign}
+              title={selectedPort.name}
+              status={berthed ? selectedPort.callsign + " · Docked"
+                : selectedPort.callsign + " · " + (mode === "live" && livePaused
+                  ? "Navigation on standby" : "Approach · " + formatDistance(selectedDistance))}
+            >
+              {berthed ? (
+                <Button label="Enter station market" onPress={() => {
+                  setStationPanel("contracts");
+                  setTab("market");
+                }} />
+              ) : mode === "training" ? (
+                <Button label="Simulate approach" accessibilityLabel={"Simulate approach to " + selectedPort.name}
+                  onPress={simulateQualification} disabled={contractSaving} />
+              ) : livePaused ? (
+                <Button label="Start live navigation" onPress={() => {
+                  setSaveReady(false);
+                  setBooting(true);
+                  setLiveStartAttempt((attempt) => attempt + 1);
+                }} />
+              ) : (
+                <Button label="Open star chart" onPress={() => setTab("chart")} tone="ghost" />
+              )}
+            </FlightScene>
+            <View style={styles.pageBody}>
+              <View style={styles.statusBar}>
+                <Stat label="Credits" value={game.player.credits + " CR"} />
+                <Stat label="Cargo" value={usedCargo + "/" + game.player.cargoCapacity} />
+                <Stat label="Hull" value={game.player.hull + "/" + game.player.maxHull}
+                  warning={game.player.hull < game.player.maxHull} />
+              </View>
+              {mode === "live" && !livePaused && <DockingStatusCard coordinator={coordinator}
+                foregroundOnly={foregroundOnly} onEnableBackground={beginBackgroundPermissionRequest} />}
+              {!berthed && mode === "training" && <Text style={styles.receiptLine}>
+                Training advances the 10-minute docking check without using GPS.
+              </Text>}
+              <View style={styles.trainingRow}>
+                <View style={styles.flexOne}>
+                  <Text style={styles.trainingTitle}>Training simulator</Text>
+                  <Text style={styles.trainingCopy}>Training and Live use separate saves.</Text>
+                </View>
+                <Switch accessibilityLabel="Training simulator" disabled={contractSaving}
+                  onValueChange={(enabled) => {
+                    if (contractSavingRef.current) return;
+                    setMode(enabled ? "training" : "live");
+                    setNotice(enabled ? "TRAINING CAMPAIGN ACTIVE · LIVE PROGRESS UNCHANGED" : "LIVE CAMPAIGN ACTIVE");
+                  }}
+                  thumbColor={mode === "training" ? COLORS.accent : COLORS.muted}
+                  trackColor={{ false: COLORS.line, true: COLORS.frame }} value={mode === "training"} />
+              </View>
+              {mode === "live" && <Text style={styles.testContentNoticeText}>
+                Flight art is fictional. Pilot locations are unavailable. Do not travel to generated test points.
+              </Text>}
+            </View>
+          </>
+        )}
+
+        {tab === "chart" && (
+          <View style={styles.pageBody}>
+            <SectionHeader title="Plot a course" />
+            <Text style={styles.receiptLine}>Select a starport to return to the bridge on its approach.</Text>
+            <StarChart game={game} position={position} selectedPortId={selectedPort.id}
+              onSelect={plotCourse} size={radarSize} />
+            <Pressable accessibilityRole="button" accessibilityState={{ expanded: showPortList }}
+              onPress={() => setShowPortList((shown) => !shown)} style={styles.portListRow}>
+              <Text style={styles.commodityName}>Port list · {game.discoveredPortIds.length} of {game.ports.length} visited</Text>
+            </Pressable>
+            {showPortList && game.ports.map((port) => {
+              const visited = game.discoveredPortIds.includes(port.id);
+              const range = formatDistance(distanceMeters(position, port.position));
+              const selected = selectedPort.id === port.id;
+              return (
+                <Pressable accessibilityRole="button" accessibilityState={{ selected }}
+                  accessibilityLabel={"Select " + port.name + ", " + (visited ? "visited" : "unvisited") + ", " + range}
+                  key={port.id} onPress={() => plotCourse(port.id)} style={styles.portListRow}>
+                  <Text style={[styles.commodityName, selected && styles.limeText]}>{port.name}</Text>
+                  <Text style={styles.commodityMeta}>{visited ? "Visited" : "Unvisited"} · {range}</Text>
+                </Pressable>
+              );
+            })}
             <View style={styles.testContentNotice}>
               <Text style={styles.testContentNoticeText}>
                 Public pilot preset unavailable. Desk check complete. Field validation pending.
@@ -1080,271 +1162,166 @@ export default function App() {
                 The chart shows generated test points. Use Training for route tests. Do not travel to these points.
               </Text>
             </View>
-            <Pressable accessibilityRole="button" accessibilityState={{ expanded: showPortList }}
-              onPress={() => setShowPortList((shown) => !shown)} style={styles.portListRow}>
-              <Text style={styles.commodityName}>Port list · {game.discoveredPortIds.length} of {game.ports.length} visited</Text>
-            </Pressable>
-            {showPortList && <View style={styles.panel}>
-              {game.ports.map((port) => {
-                const visited = game.discoveredPortIds.includes(port.id);
-                const range = formatDistance(distanceMeters(position, port.position));
-                return (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: selectedPort.id === port.id }}
-                    accessibilityLabel={`Select ${port.name}, ${visited ? "visited" : "unvisited"}, ${range}`}
-                    key={port.id}
-                    onPress={() => { void selectPort(port.id); }}
-                    style={styles.portListRow}
-                  >
-                    <Text style={[styles.commodityName, selectedPort.id === port.id && styles.limeText]}>{port.name}</Text>
-                    <Text style={styles.commodityMeta}>{visited ? "Visited" : "Unvisited"} · {range}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>}
-            <View style={styles.panel}>
-              <StarChart
-                game={game}
-                onSelect={(portId) => { void selectPort(portId); }}
-                position={position}
-                selectedPortId={selectedPort.id}
-                size={radarSize - 34}
-              />
-              <Text style={styles.scopeLegend}>Triangle: ship · Diamond: port · Amber: selected</Text>
-            </View>
-
-            <View style={styles.destinationCard}>
-              <View style={styles.destinationTopline}>
-                <View style={styles.flexOne}>
-                  <Text style={styles.eyebrow}>SELECTED DESTINATION</Text>
-                  <Text style={styles.destinationName}>{selectedPort.name}</Text>
-                  <Text style={styles.callsign}>{selectedPort.callsign}</Text>
-                </View>
-                <View style={styles.rangeBox}>
-                  <Text style={styles.rangeLabel}>RANGE</Text>
-                  <Text style={styles.rangeValue}>{formatDistance(selectedDistance)}</Text>
-                </View>
+            <SectionHeader title="Market transmissions" />
+            {getRumors(game, selectedPort.id).slice(0, 3).map((rumor) => (
+              <View key={rumor.commodityId} style={styles.rumorRow}>
+                <Text style={styles.rumorText}>{rumorSummary(rumor.commodityName, rumor.band)}</Text>
+                <BandPill band={rumor.band} />
               </View>
-
-              {mode === "live" && livePaused ? (
-                <Button label="Start live navigation" onPress={() => {
-                  setSaveReady(false);
-                  setBooting(true);
-                  setLiveStartAttempt((attempt) => attempt + 1);
-                }} />
-              ) : (
-                <DockingStatusCard
-                  coordinator={coordinator}
-                  foregroundOnly={mode === "live" && foregroundOnly}
-                  onEnableBackground={beginBackgroundPermissionRequest}
-                />
-              )}
-
-              <View style={styles.rumorGrid}>
-                {getRumors(game, selectedPort.id).slice(0, 3).map((rumor) => (
-                  <View key={rumor.commodityId} style={styles.rumorRow}>
-                    <Text numberOfLines={1} style={styles.rumorText}>{rumorSummary(rumor.commodityName, rumor.band)}</Text>
-                    <BandPill band={rumor.band} />
+            ))}
+            {game.ports.slice(1, 4).map((port) => {
+              const rumors = getRumors(game, port.id);
+              const signal = rumors.find((rumor) => rumor.band !== "steady") ?? rumors[0];
+              return (
+                <Pressable accessibilityRole="button" key={port.id} onPress={() => plotCourse(port.id)}
+                  accessibilityLabel={port.name + ", " + rumorSummary(signal.commodityName, signal.band)}
+                  style={styles.newsRow}>
+                  <View style={styles.flexOne}>
+                    <Text style={styles.commodityName}>{port.name}</Text>
+                    <Text style={styles.rumorText}>{rumorSummary(signal.commodityName, signal.band)}</Text>
                   </View>
-                ))}
-              </View>
-
-              <View style={styles.trainingRow}>
-                <View style={styles.flexOne}>
-                  <Text style={styles.trainingTitle}>TRAINING CAMPAIGN</Text>
-                  <Text style={styles.trainingCopy}>Separate save, cargo, credits, markets, and encounters.</Text>
-                </View>
-                <Switch
-                  accessibilityLabel="Training simulator"
-                  disabled={contractSaving}
-                  onValueChange={(enabled) => {
-                    if (contractSavingRef.current) return;
-                    setMode(enabled ? "training" : "live");
-                    setNotice(enabled
-                      ? "TRAINING CAMPAIGN ACTIVE · LIVE PROGRESS UNCHANGED"
-                      : "LIVE CAMPAIGN ACTIVE");
-                  }}
-                  thumbColor={mode === "training" ? COLORS.accent : COLORS.muted}
-                  trackColor={{ false: COLORS.line, true: COLORS.frame }}
-                  value={mode === "training"}
-                />
-              </View>
-              {mode === "training" && (
-                <Button
-                  label={`SIMULATE 10 MIN QUALIFICATION · ${selectedPort.callsign}`}
-                  onPress={simulateQualification}
-                  tone="ghost"
-                />
-              )}
-            </View>
-
-            <SectionHeader eyebrow="GALACTIC NEWS" title="MARKET INTELLIGENCE" />
-            <View style={styles.panel}>
-              {game.ports.slice(1, 4).map((port) => {
-                const rumors = getRumors(game, port.id);
-                const signal = rumors.find((rumor) => rumor.band !== "steady") ?? rumors[0];
-                return (
-                  <Pressable
-                    accessibilityRole="button"
-                    key={port.id}
-                    onPress={() => { void selectPort(port.id); }}
-                    style={styles.newsRow}
-                  >
-                    <View style={[styles.newsSignal, signal.band === "expensive" && styles.newsSignalHot]} />
-                    <View style={styles.flexOne}>
-                      <Text style={styles.newsHeadline}>{rumorSummary(signal.commodityName, signal.band)}</Text>
-                      <Text style={styles.newsMeta}>{port.callsign} · {formatDistance(distanceMeters(position, port.position))}</Text>
-                    </View>
-                    <Text style={styles.chevron}>›</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </>
+                </Pressable>
+              );
+            })}
+          </View>
         )}
 
         {tab === "market" && (
           <>
-            <SectionHeader eyebrow="PORT MARKET" title={dockedPort?.name ?? "NO DOCKING LINK"} />
-            <CargoContract game={game} dockedPortId={dockedPort?.id} saving={contractSaving}
-              onAccept={() => { void saveContract(acceptDelivery, "Contract accepted. Buy Ion Fuel at Wayfarer Freeport."); }}
-              onDeliver={() => { void saveContract(completeDelivery, `Delivery complete. Received ${DELIVERY.reward} cr.`); }} />
-            <LastTrade game={game} onUpgrades={() => setTab("ship")} />
-            {!dockedPort ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyGlyph}>⌁</Text>
-                <Text style={styles.emptyTitle}>MARKET ENCRYPTED</Text>
-                <Text style={styles.emptyCopy}>Select a starport and complete its automatic 10-minute docking qualification to reveal exact prices.</Text>
-                <Button label="RETURN TO CHART" onPress={() => setTab("chart")} tone="ghost" />
-              </View>
-            ) : (
-              <View style={styles.marketPanel}>
-                <View style={styles.marketBanner}>
-                  <View>
-                    <Text style={styles.marketBannerLabel}>DOCKED</Text>
-                    <Text style={styles.marketBannerValue}>{dockedPort.callsign}</Text>
-                  </View>
-                  <View style={styles.marketBannerRight}>
-                    <Text style={styles.marketBannerLabel}>AVAILABLE</Text>
-                    <Text style={styles.marketBannerValue}>{game.player.credits} CR</Text>
-                  </View>
+            {dockedPort && <FlightScene vista="market" title={dockedPort.name}
+              status={"Concourse · " + game.player.credits + " CR available"} />}
+            <View style={styles.pageBody}>
+              {dockedPort ? (
+                <View style={styles.counterChoices}>
+                  <Button compact label="Contract desk" accessibilityLabel="Open contract desk"
+                    selected={stationPanel === "contracts"}
+                    tone={stationPanel === "contracts" ? "lime" : "ghost"}
+                    onPress={() => setStationPanel("contracts")} />
+                  <Button compact label="Trade counter" accessibilityLabel="Open trade counter"
+                    selected={stationPanel === "trade"}
+                    tone={stationPanel === "trade" ? "lime" : "ghost"}
+                    onPress={() => setStationPanel("trade")} />
                 </View>
-                {dockedPort.market.map((quote) => (
-                  <MarketRow
-                    key={`${mode}-${dockedPort.id}-${quote.commodityId}`}
-                    game={game}
-                    onOrder={(side, quantity) => executeTrade(quote, side, quantity)}
-                    quote={quote}
-                  />
-                ))}
-                <Text style={styles.spreadNote}>Station spread applies. Shared-market synchronization comes after MVP validation.</Text>
-              </View>
-            )}
+              ) : (
+                <>
+                  <SectionHeader title="Contract log" />
+                  <Text style={styles.emptyTitle}>Market encrypted</Text>
+                  <Text style={styles.emptyCopy}>Complete docking qualification to access the station and its prices.</Text>
+                  <Button label="Return to bridge" onPress={() => setTab("bridge")} tone="ghost" />
+                </>
+              )}
+              {(!dockedPort || stationPanel === "contracts") && (
+                <CargoContract game={game} dockedPortId={dockedPort?.id} saving={contractSaving}
+                  onAccept={() => { void saveContract(acceptDelivery, "Contract accepted. Buy Ion Fuel at Wayfarer Freeport."); }}
+                  onDeliver={() => { void saveContract(completeDelivery, "Delivery complete. Received " + DELIVERY.reward + " cr."); }} />
+              )}
+              {(!dockedPort || stationPanel === "trade") && (
+                <LastTrade game={game} onUpgrades={() => setTab("ship")} />
+              )}
+              {dockedPort && stationPanel === "trade" && (
+                <View style={styles.marketPanel}>
+                  <SectionHeader title="Trade counter" />
+                  {dockedPort.market.map((quote) => (
+                    <MarketRow key={mode + "-" + dockedPort.id + "-" + quote.commodityId}
+                      game={game} onOrder={(side, quantity) => executeTrade(quote, side, quantity)} quote={quote} />
+                  ))}
+                  <Text style={styles.spreadNote}>Station prices are local to this save.</Text>
+                </View>
+              )}
+            </View>
           </>
         )}
 
         {tab === "ship" && (
           <>
-            <SectionHeader eyebrow="SHIP SYSTEMS" title="THE WAYWARD" />
-            <SectionHeader eyebrow="SHIPYARD" title="UPGRADES" />
-            {([
-              ["cargo", "Install expanded cargo pods", "+4 cargo capacity"],
-              ["hull", "Install reactive hull plating", "+1 hull integrity"],
-            ] as const).map(([id, label, benefit]) => {
-              const cost = UPGRADE_COST[id];
-              const shortfall = cost - game.player.credits;
-              return (
-                <View key={id} style={styles.upgradeCard}>
-                  <View style={styles.flexOne}>
-                    <Text style={styles.upgradeTitle}>{label}</Text>
-                    <Text style={styles.upgradeCopy}>{benefit} · {cost} cr</Text>
-                    {shortfall > 0 && <Text style={styles.upgradeCopy}>{shortfall} cr short</Text>}
-                  </View>
-                  <Button compact disabled={shortfall > 0 || (mode === "live" && livePaused)} label="Install"
-                    accessibilityLabel={`${label}, ${cost} credits`}
-                    onPress={() => mutate(
-                      (current) => buyUpgrade(current, id),
-                      id === "cargo" ? "CARGO PODS INSTALLED · 4 SLOTS ADDED" : "HULL PLATING INSTALLED",
-                    )} />
-                </View>
-              );
-            })}
-            <View style={styles.shipHero}>
-              <View style={styles.shipSilhouette}>
-                <View style={styles.shipNose} />
-                <View style={styles.shipBody} />
-                <View style={styles.shipWingLeft} />
-                <View style={styles.shipWingRight} />
-                <View style={styles.engineGlow} />
+            <FlightScene vista="cargo" title="The Wayward" status="Cargo hold · Registry WFR-731" />
+            <View style={styles.pageBody}>
+              <View style={styles.statusBar}>
+                <Stat label="Credits" value={game.player.credits + " CR"} />
+                <Stat label="Hull integrity" value={game.player.hull + "/" + game.player.maxHull} />
+                <Stat label="Hold capacity" value={usedCargo + "/" + game.player.cargoCapacity} />
               </View>
-              <Text style={styles.shipClass}>COURIER-CLASS · REGISTRY WFR-731</Text>
-            </View>
-
-            <View style={styles.shipStats}>
-              <Stat label="HULL INTEGRITY" value={`${game.player.hull}/${game.player.maxHull}`} />
-              <Stat label="HOLD CAPACITY" value={`${usedCargo}/${game.player.cargoCapacity}`} />
-            </View>
-
-            <SectionHeader eyebrow="MANIFEST" title="CARGO HOLD" />
-            <View style={styles.panel}>
-              {COMMODITIES.map((commodity) => {
-                const quantity = game.player.cargo[commodity.id] ?? 0;
+              <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.stowage}>
+                {Array.from({ length: Math.min(12, game.player.cargoCapacity) }, (_, index) =>
+                  <View key={index} style={[styles.stowageSlot, index < usedCargo && styles.stowageOccupied]} />)}
+              </View>
+              <SectionHeader title="Shipyard upgrades" />
+              {([
+                ["cargo", "Install expanded cargo pods", "+4 cargo capacity"],
+                ["hull", "Install reactive hull plating", "+1 hull integrity"],
+              ] as const).map(([id, label, benefit]) => {
+                const cost = UPGRADE_COST[id];
+                const shortfall = cost - game.player.credits;
                 return (
-                  <View key={commodity.id} style={styles.manifestRow}>
-                    <Text style={styles.manifestSymbol}>{commodity.symbol}</Text>
-                    <Text style={styles.manifestName}>{commodity.name}</Text>
-                    <Text style={[styles.manifestQuantity, quantity > 0 && styles.limeText]}>{quantity} U</Text>
+                  <View key={id} style={styles.upgradeCard}>
+                    <View style={styles.flexOne}>
+                      <Text style={styles.upgradeTitle}>{label}</Text>
+                      <Text style={styles.upgradeCopy}>{benefit} · {cost} cr</Text>
+                      {shortfall > 0 && <Text style={styles.upgradeCopy}>{shortfall} cr short</Text>}
+                    </View>
+                    <Button compact disabled={shortfall > 0 || (mode === "live" && livePaused)} label="Install"
+                      accessibilityLabel={`${label}, ${cost} credits`}
+                      onPress={() => mutate(
+                        (current) => buyUpgrade(current, id),
+                        id === "cargo" ? "CARGO PODS INSTALLED · 4 SLOTS ADDED" : "HULL PLATING INSTALLED",
+                      )} />
                   </View>
                 );
               })}
-            </View>
+              <SectionHeader title="Cargo manifest" />
+              <View style={styles.panel}>
+                {COMMODITIES.map((commodity) => {
+                  const quantity = game.player.cargo[commodity.id] ?? 0;
+                  return (
+                    <View key={commodity.id} style={styles.manifestRow}>
+                      <Text style={styles.manifestSymbol}>{commodity.symbol}</Text>
+                      <Text style={styles.manifestName}>{commodity.name}</Text>
+                      <Text style={[styles.manifestQuantity, quantity > 0 && styles.limeText]}>{quantity} U</Text>
+                    </View>
+                  );
+                })}
+              </View>
 
-            <SectionHeader eyebrow="ON THIS DEVICE" title="Local game data" />
-            <View style={styles.receipt}>
-              <Text style={styles.receiptLine}>
-                Live and Training have separate local saves for ship, cargo, markets, visits, contract and the last receipt.
-                Live saves include starting and generated port coordinates plus the selected docking target and qualification progress.
-                New Training saves use a simulated map. Older Training saves may include coordinates from their initial location.
-                Raw location readings and movement trails are not saved.
-              </Text>
-              <Text style={styles.receiptLine}>Android manages app permissions and system backups separately.</Text>
-              <Button label={`Reset ${mode === "live" ? "Live" : "Training"} game data`}
-                disabled={contractSaving} onPress={() => setResetMode(mode)} tone="ghost" />
+              <SectionHeader title="Local game data" />
+              <View style={styles.receipt}>
+                <Text style={styles.receiptLine}>
+                  Live and Training have separate local saves for ship, cargo, markets, visits, contract and the last receipt.
+                  Live saves include starting and generated port coordinates plus the selected docking target and qualification progress.
+                  New Training saves use a simulated map. Older Training saves may include coordinates from their initial location.
+                  Raw location readings and movement trails are not saved.
+                </Text>
+                <Text style={styles.receiptLine}>Android manages app permissions and system backups separately.</Text>
+                <Button label={`Reset ${mode === "live" ? "Live" : "Training"} game data`}
+                  disabled={contractSaving} onPress={() => setResetMode(mode)} tone="ghost" />
+              </View>
             </View>
           </>
         )}
       </ScrollView>
 
+      <View accessibilityLiveRegion="polite" style={styles.noticeBar}>
+        <Text style={styles.noticeText}>{notice}</Text>
+      </View>
       <View style={styles.tabBar}>
         {([
-          ["chart", "CHART"],
-          ["market", "MARKET"],
-          ["ship", "SHIP"],
+          ["bridge", "Bridge"],
+          ["chart", "Chart"],
+          ["market", "Station"],
+          ["ship", "Hold"],
         ] as const).map(([key, label]) => (
-          <Pressable
-            accessibilityRole="tab"
-            accessibilityState={{ selected: tab === key }}
-            key={key}
-            onPress={() => {
+          <Pressable accessibilityRole="tab" accessibilityState={{ selected: tab === key }}
+            key={key} onPress={() => {
               setTab(key);
               void Haptics.selectionAsync();
             }}
-            style={[styles.tab, tab === key && styles.tabActive]}
-          >
-            <View importantForAccessibility="no" style={[
-              styles.tabMark,
-              key === "chart" && styles.tabMarkChart,
-              key === "ship" && styles.tabMarkShip,
-              tab === key && styles.tabMarkActive,
-            ]} />
+            style={[styles.tab, tab === key && styles.tabActive]}>
             <Text style={[styles.tabLabel, tab === key && styles.tabTextActive]}>{label}</Text>
           </Pressable>
         ))}
       </View>
 
       <Modal visible={resetMode !== null} transparent onRequestClose={() => { if (!resetting) setResetMode(null); }}>
-        <View style={styles.modalScrim}>
+        <ScrollView contentContainerStyle={styles.modalScrim}>
           <View style={styles.encounterCard} accessibilityViewIsModal>
             <Text style={styles.receiptTitle} accessibilityRole="header">
               {resetMode === "live" ? "Reset Live game data?" : "Reset Training game data?"}
@@ -1358,7 +1335,7 @@ export default function App() {
             <Button label={resetMode === "live" ? "Confirm Live reset" : "Confirm Training reset"}
               disabled={resetting} tone="danger" onPress={() => { void resetCampaign(); }} />
           </View>
-        </View>
+        </ScrollView>
       </Modal>
       <EncounterModal game={game} onResolve={handleEncounter} />
       <BackgroundPermissionModal
@@ -1371,22 +1348,21 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  brand: { flex: 1, minWidth: 175, flexDirection: "row", alignItems: "center", gap: 9 },
-  brandMark: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#80664e", backgroundColor: COLORS.contract },
+  pageBody: { paddingHorizontal: 20, gap: 4 },
+  counterChoices: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 13 },
+  scroll: { flex: 1 },
+  stowage: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginBottom: 16 },
+  stowageSlot: { width: 17, height: 19, borderWidth: 1, borderColor: COLORS.frame, borderRadius: 2 },
+  stowageOccupied: { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
   scopeLabel: { position: "absolute", left: 8, top: 7, fontSize: 10, color: COLORS.muted },
   scopeStar: { position: "absolute", width: 2, height: 2, backgroundColor: "#91afc8", borderRadius: 1 },
   scopeVector: { position: "absolute", height: 1, backgroundColor: "#ac855c" },
   shipPointer: { width: 0, height: 0, borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 15, borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: COLORS.signal },
-  scopeLegend: { color: COLORS.muted, fontSize: 11, lineHeight: 16, marginTop: 8 },
   contract: { backgroundColor: COLORS.contract, borderStyle: "dashed", borderColor: "#80664e" },
   contractHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 },
   contractReward: { color: COLORS.accent, fontSize: 12, fontVariant: ["tabular-nums"] },
-  tabMark: { width: 13, height: 10, borderWidth: 1, borderColor: COLORS.muted },
-  tabMarkChart: { width: 11, height: 11, borderRadius: 6 },
-  tabMarkShip: { width: 9, height: 9, transform: [{ rotate: "45deg" }] },
-  tabMarkActive: { borderColor: COLORS.accent },
   flexOne: { flex: 1 },
-  safeArea: { flex: 1, backgroundColor: COLORS.void, paddingTop: Platform.OS === "android" ? 18 : 0 },
+  safeArea: { flex: 1, backgroundColor: COLORS.void },
   bootScreen: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.void, padding: 28 },
   bootMark: { width: 68, height: 68, borderWidth: 1, borderColor: COLORS.accent, alignItems: "center", justifyContent: "center", transform: [{ rotate: "45deg" }] },
   bootMarkText: { color: COLORS.accent, fontWeight: "900", fontSize: 30, transform: [{ rotate: "-45deg" }] },
@@ -1394,80 +1370,55 @@ const styles = StyleSheet.create({
   bootSubtitle: { color: COLORS.muted, fontSize: 10, letterSpacing: 2, marginTop: 8, textAlign: "center" },
   bootSpinner: { marginTop: 54 },
   bootStatus: { color: COLORS.accent, fontSize: 10, letterSpacing: 1.5, marginTop: 16 },
-  appHeader: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 10, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12, borderBottomWidth: 1, borderColor: COLORS.frame },
-  appEyebrow: { color: COLORS.muted, fontSize: 11, marginTop: 2 },
-  appTitle: { color: COLORS.text, fontSize: 28, letterSpacing: 1.4, fontWeight: "900" },
-  gpsBadge: { maxWidth: "100%", minHeight: 34, paddingHorizontal: 8, paddingVertical: 5, flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: COLORS.line },
-  signalDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: COLORS.signal },
-  signalDotTraining: { backgroundColor: COLORS.accent },
-  gpsText: { color: COLORS.muted, flexShrink: 1, fontSize: 11 },
-  statusBar: { flexDirection: "row", flexWrap: "wrap", backgroundColor: COLORS.panel, borderBottomWidth: 1, borderColor: COLORS.line },
-  stat: { flex: 1, minWidth: 88, paddingHorizontal: 10, paddingVertical: 9, borderRightWidth: 1, borderColor: COLORS.line },
-  statLabel: { color: COLORS.muted, fontSize: 10, letterSpacing: .6 },
-  statValue: { color: COLORS.text, fontSize: 15, fontVariant: ["tabular-nums"], fontWeight: "800", marginTop: 3 },
+  appHeader: { width: "100%", maxWidth: 680, alignSelf: "center", minHeight: 50, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 7, paddingHorizontal: 20, paddingVertical: 9 },
+  appTitle: { color: COLORS.text, fontSize: 19, letterSpacing: 2.2, fontWeight: "900" },
+  gpsText: { color: COLORS.signal, flexShrink: 1, fontSize: 13, fontWeight: "700" },
+  statusBar: { flexDirection: "row", flexWrap: "wrap", borderBottomWidth: 1, borderColor: COLORS.line, marginBottom: 12 },
+  stat: { flex: 1, minWidth: 86, paddingVertical: 8, paddingRight: 9 },
+  statLabel: { color: COLORS.muted, fontSize: 12 },
+  statValue: { color: COLORS.text, fontSize: 18, fontVariant: ["tabular-nums"], fontWeight: "800", marginTop: 3 },
   warning: { color: COLORS.alert },
-  noticeBar: { minHeight: 38, justifyContent: "center", borderBottomWidth: 1, borderColor: COLORS.line, paddingVertical: 7, marginHorizontal: 16 },
-  noticeText: { color: COLORS.signal, fontSize: 12, fontWeight: "600" },
-  testContentNotice: { borderWidth: 1, borderColor: "#80664e", backgroundColor: COLORS.contract, padding: 10, marginBottom: 10, gap: 5 },
+  noticeBar: { paddingHorizontal: 20, paddingVertical: 8, borderTopWidth: 1, borderColor: COLORS.line },
+  noticeText: { color: COLORS.signal, fontSize: 12, lineHeight: 17 },
+  testContentNotice: { paddingVertical: 12, gap: 5 },
   testContentNoticeText: { color: COLORS.text, fontSize: 12, lineHeight: 18 },
-  scrollContent: { padding: 16, paddingBottom: 30 },
-  sectionHeader: { marginTop: 6, marginBottom: 10 },
-  eyebrow: { color: COLORS.signal, fontSize: 10, letterSpacing: .6, fontWeight: "700" },
-  sectionTitle: { color: COLORS.text, fontSize: 24, fontWeight: "800", letterSpacing: -.45, marginTop: 2 },
+  scrollContent: { width: "100%", maxWidth: 680, alignSelf: "center", paddingBottom: 22 },
+  sectionTitle: { color: COLORS.text, fontFamily: "serif", fontSize: 25, fontWeight: "700", marginTop: 8, marginBottom: 8 },
   panel: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 12, marginBottom: 16 },
-  radar: { alignSelf: "center", overflow: "hidden", backgroundColor: COLORS.deep, borderWidth: 1, borderColor: "#466178" },
+  radar: { alignSelf: "center", overflow: "hidden", backgroundColor: COLORS.deep, borderWidth: 1, borderColor: COLORS.line, marginTop: 12, marginBottom: 12 },
   radarRing: { position: "absolute", left: "50%", top: "50%", borderRadius: 999, borderWidth: 1, borderColor: "#466178" },
   radarAxisHorizontal: { position: "absolute", top: "50%", left: 12, right: 12, height: 1, backgroundColor: "#31465b" },
   radarAxisVertical: { position: "absolute", left: "50%", top: 12, bottom: 12, width: 1, backgroundColor: "#31465b" },
   shipMarker: { position: "absolute", zIndex: 2, width: 24, height: 24, marginLeft: -12, marginTop: -12, alignItems: "center", justifyContent: "center" },
-  portNode: { position: "absolute", zIndex: 3, width: 56, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  portNode: { position: "absolute", zIndex: 3, width: 56, minHeight: 48, alignItems: "center", justifyContent: "center" },
   portDiamond: { width: 10, height: 10, borderWidth: 1, borderColor: COLORS.signal, backgroundColor: COLORS.deep, transform: [{ rotate: "45deg" }] },
   portDiamondVisited: { backgroundColor: COLORS.signal },
   portDiamondSelected: { width: 13, height: 13, borderColor: COLORS.accent, backgroundColor: COLORS.accent },
   portNodeLabel: { color: COLORS.muted, backgroundColor: COLORS.deep, fontSize: 10, marginTop: 5, fontWeight: "700" },
   portNodeLabelSelected: { color: COLORS.accent },
-  destinationCard: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 16, marginBottom: 22 },
-  destinationTopline: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  destinationName: { color: COLORS.text, fontSize: 24, fontWeight: "900", letterSpacing: -.7, marginTop: 3 },
-  callsign: { color: COLORS.muted, fontSize: 10, letterSpacing: 1.1, marginTop: 4 },
-  rangeBox: { minWidth: 74, alignItems: "flex-end" },
-  rangeLabel: { color: COLORS.muted, fontSize: 10, letterSpacing: .6 },
-  rangeValue: { color: COLORS.signal, fontSize: 15, fontWeight: "800", marginTop: 3 },
   limeText: { color: COLORS.accent },
-  rumorGrid: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: COLORS.line, marginVertical: 15, paddingVertical: 6 },
   rumorRow: { minHeight: 35, flexDirection: "row", alignItems: "center", gap: 8 },
-  rumorText: { flex: 1, color: COLORS.text, fontSize: 9, letterSpacing: .4 },
+  rumorText: { flexShrink: 1, color: COLORS.muted, fontSize: 13, lineHeight: 19 },
   band: { borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 7, paddingVertical: 4 },
   bandCheap: { borderColor: COLORS.frame, backgroundColor: "#172a36" },
   bandExpensive: { borderColor: "#8a5050", backgroundColor: "#281e28" },
-  bandText: { color: COLORS.muted, fontSize: 7, fontWeight: "800", letterSpacing: .6 },
-  trainingRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
-  trainingTitle: { color: COLORS.text, fontSize: 12, fontWeight: "800" },
+  bandText: { color: COLORS.text, fontSize: 11, fontWeight: "800" },
+  trainingRow: { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 52, marginTop: 12 },
+  trainingTitle: { color: COLORS.text, fontSize: 15, fontWeight: "800" },
   trainingCopy: { color: COLORS.muted, fontSize: 12, marginTop: 2 },
-  button: { minHeight: 46, borderWidth: 1, borderColor: COLORS.accent, backgroundColor: COLORS.accent, alignItems: "center", justifyContent: "center", paddingHorizontal: 14, marginTop: 8 },
+  button: { minHeight: 50, borderRadius: 8, borderWidth: 1, borderColor: COLORS.accent, backgroundColor: COLORS.accent, alignItems: "center", justifyContent: "center", paddingHorizontal: 14, paddingVertical: 8, marginTop: 8 },
   buttonCompact: { minHeight: 48, paddingHorizontal: 10, marginTop: 0 },
   buttonLime: { backgroundColor: COLORS.accent },
   buttonGhost: { backgroundColor: "transparent", borderColor: COLORS.line },
   buttonDanger: { backgroundColor: COLORS.alert, borderColor: COLORS.alert },
   buttonDisabled: { backgroundColor: "transparent", borderColor: COLORS.line, opacity: .78 },
   buttonPressed: { opacity: .82 },
-  buttonLabel: { color: COLORS.text, fontSize: 12, fontWeight: "700", textAlign: "center" },
+  buttonLabel: { color: COLORS.text, fontSize: 14, fontWeight: "700", textAlign: "center" },
   buttonLabelDark: { color: COLORS.void },
   newsRow: { minHeight: 61, flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderColor: COLORS.line, gap: 11 },
-  newsSignal: { width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.accent },
-  newsSignalHot: { backgroundColor: COLORS.alert },
-  newsHeadline: { color: COLORS.text, fontSize: 10, fontWeight: "800", letterSpacing: .4 },
-  newsMeta: { color: COLORS.muted, fontSize: 8, letterSpacing: .7, marginTop: 4 },
-  chevron: { color: COLORS.muted, fontSize: 24 },
-  emptyCard: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 28, alignItems: "center" },
-  emptyGlyph: { color: COLORS.accent, fontSize: 42 },
-  emptyTitle: { color: COLORS.text, fontSize: 18, fontWeight: "900", marginTop: 12 },
-  emptyCopy: { color: COLORS.muted, fontSize: 11, lineHeight: 17, textAlign: "center", marginVertical: 12 },
-  marketPanel: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 12 },
-  marketBanner: { flexDirection: "row", justifyContent: "space-between", backgroundColor: COLORS.panelLift, borderWidth: 1, borderColor: COLORS.line, padding: 12, marginBottom: 7 },
-  marketBannerRight: { alignItems: "flex-end" },
-  marketBannerLabel: { color: COLORS.muted, fontSize: 7, letterSpacing: 1.2 },
-  marketBannerValue: { color: COLORS.accent, fontSize: 12, fontWeight: "900", marginTop: 3 },
+  emptyTitle: { color: COLORS.text, fontSize: 20, fontWeight: "800" },
+  emptyCopy: { color: COLORS.muted, fontSize: 14, lineHeight: 20, marginTop: 6 },
+  marketPanel: { paddingBottom: 10 },
   marketRow: { borderTopWidth: 1, borderColor: COLORS.line, gap: 8, paddingVertical: 12 },
   commodityIdentity: { flex: 1.25, flexDirection: "row", alignItems: "center", gap: 8 },
   commodityBadge: { width: 30, height: 30, borderWidth: 1, borderColor: COLORS.line, alignItems: "center", justifyContent: "center" },
@@ -1480,29 +1431,20 @@ const styles = StyleSheet.create({
   receipt: { gap: 7, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel },
   receiptTitle: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
   receiptLine: { color: COLORS.muted, fontSize: 13, lineHeight: 19 },
-  spreadNote: { color: COLORS.muted, fontSize: 8, lineHeight: 13, marginTop: 12 },
-  shipHero: { height: 164, borderWidth: 1, borderColor: "#466178", backgroundColor: COLORS.deep, alignItems: "center", justifyContent: "center", marginBottom: 12, overflow: "hidden" },
-  shipSilhouette: { width: 190, height: 92, alignItems: "center", justifyContent: "center" },
-  shipNose: { position: "absolute", right: 7, width: 0, height: 0, borderTopWidth: 18, borderBottomWidth: 18, borderLeftWidth: 42, borderTopColor: "transparent", borderBottomColor: "transparent", borderLeftColor: COLORS.text },
-  shipBody: { position: "absolute", right: 45, width: 105, height: 34, borderRadius: 14, backgroundColor: "#23415a", borderWidth: 1, borderColor: COLORS.signal },
-  shipWingLeft: { position: "absolute", left: 35, top: 11, width: 88, height: 23, backgroundColor: "#456680", transform: [{ skewX: "-28deg" }] },
-  shipWingRight: { position: "absolute", left: 35, bottom: 11, width: 88, height: 23, backgroundColor: "#456680", transform: [{ skewX: "28deg" }] },
-  engineGlow: { position: "absolute", left: 22, width: 28, height: 20, borderRadius: 10, backgroundColor: COLORS.accent, shadowColor: COLORS.accent, shadowOpacity: 1, shadowRadius: 14, elevation: 8 },
-  shipClass: { position: "absolute", bottom: 12, color: COLORS.muted, fontSize: 10, letterSpacing: .6 },
-  shipStats: { flexDirection: "row", borderWidth: 1, borderColor: COLORS.line, marginBottom: 20 },
-  manifestRow: { minHeight: 45, flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderColor: COLORS.line },
+  spreadNote: { color: COLORS.muted, fontSize: 12, marginTop: 10 },
+  manifestRow: { minHeight: 48, flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderColor: COLORS.line, gap: 8 },
   manifestSymbol: { width: 36, color: COLORS.accent, fontSize: 9, fontWeight: "900" },
-  manifestName: { flex: 1, color: COLORS.text, fontSize: 11 },
-  manifestQuantity: { color: COLORS.muted, fontSize: 11, fontWeight: "900" },
-  upgradeCard: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 14, marginBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 },
+  manifestName: { flex: 1, color: COLORS.text, fontSize: 14 },
+  manifestQuantity: { color: COLORS.muted, fontSize: 13, fontWeight: "800" },
+  upgradeCard: { borderTopWidth: 1, borderColor: COLORS.line, paddingVertical: 12, flexDirection: "row", alignItems: "center", gap: 10 },
   upgradeTitle: { color: COLORS.text, fontSize: 13, fontWeight: "800" },
   upgradeCopy: { color: COLORS.muted, fontSize: 12, marginTop: 5 },
-  tabBar: { minHeight: 62, flexDirection: "row", backgroundColor: COLORS.deep, borderTopWidth: 1, borderColor: COLORS.frame, paddingBottom: Platform.OS === "android" ? 6 : 0 },
-  tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 3, borderTopWidth: 2, borderTopColor: "transparent" },
-  tabActive: { borderTopColor: COLORS.accent, backgroundColor: COLORS.panelLift },
-  tabLabel: { color: COLORS.muted, fontSize: 11, fontWeight: "700", letterSpacing: .7 },
+  tabBar: { minHeight: 56, flexDirection: "row", borderTopWidth: 1, borderColor: COLORS.line, gap: 8, paddingHorizontal: 8 },
+  tab: { flex: 1, minHeight: 48, paddingVertical: 8, alignItems: "center", justifyContent: "center", borderTopWidth: 2, borderTopColor: "transparent" },
+  tabActive: { borderTopColor: COLORS.accent, backgroundColor: COLORS.panel },
+  tabLabel: { color: COLORS.muted, fontSize: 13, textAlign: "center", fontWeight: "700" },
   tabTextActive: { color: COLORS.accent },
-  modalScrim: { flex: 1, justifyContent: "center", padding: 22, backgroundColor: "rgba(0,0,0,.78)" },
+  modalScrim: { flexGrow: 1, justifyContent: "center", padding: 22, backgroundColor: "rgba(0,0,0,.78)" },
   encounterCard: { borderWidth: 2, borderColor: COLORS.alert, backgroundColor: COLORS.panel, padding: 22 },
   alertCode: { color: COLORS.alert, fontSize: 8, fontWeight: "900", letterSpacing: 1.1 },
   encounterTitle: { color: COLORS.text, fontSize: 30, fontWeight: "900", marginTop: 5 },

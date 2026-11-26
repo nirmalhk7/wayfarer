@@ -1,6 +1,6 @@
 import { COCKPIT } from "./cockpitTheme";
 import { useEffect, useState } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import {
   dockingViewModel,
@@ -120,8 +120,8 @@ export function BackgroundPermissionModal({
 }) {
   return (
     <Modal onRequestClose={onCancel} transparent visible={visible}>
-      <View style={styles.scrim}>
-        <View style={styles.modalCard}>
+      <ScrollView contentContainerStyle={styles.scrim}>
+        <View style={styles.modalCard} accessibilityViewIsModal>
           <Text style={styles.modalEyebrow}>BACKGROUND NAVIGATION</Text>
           <Text style={styles.modalTitle}>KEEP QUALIFYING WHILE AWAY</Text>
           <Text style={styles.modalCopy}>
@@ -146,28 +146,28 @@ export function BackgroundPermissionModal({
             <Text style={styles.secondaryText}>NOT NOW</Text>
           </Pressable>
         </View>
-      </View>
+      </ScrollView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
   card: { borderWidth: 1, borderColor: COCKPIT.line, backgroundColor: COCKPIT.panel, padding: 13, marginBottom: 12 },
-  topline: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
-  phase: { color: COCKPIT.signal, fontSize: 10, fontWeight: "900", letterSpacing: 1 },
-  countdown: { color: COCKPIT.accent, fontSize: 9, fontWeight: "900", letterSpacing: .7 },
-  detail: { color: COCKPIT.muted, fontSize: 9, lineHeight: 14, marginTop: 6 },
+  topline: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  phase: { color: COCKPIT.signal, fontSize: 13, fontWeight: "900", letterSpacing: 1 },
+  countdown: { color: COCKPIT.accent, fontSize: 12, fontWeight: "900", letterSpacing: .7 },
+  detail: { color: COCKPIT.muted, fontSize: 12, lineHeight: 18, marginTop: 6 },
   warning: { borderTopWidth: 1, borderColor: COCKPIT.line, marginTop: 10, paddingTop: 9 },
   warningText: { color: COCKPIT.accent, fontSize: 11, lineHeight: 16, letterSpacing: .5 },
-  action: { minHeight: 44, borderWidth: 1, borderColor: COCKPIT.accent, alignItems: "center", justifyContent: "center", marginTop: 8 },
-  actionText: { color: COCKPIT.accent, fontSize: 8, fontWeight: "900", letterSpacing: .8 },
-  scrim: { flex: 1, justifyContent: "center", padding: 22, backgroundColor: "rgba(0,0,0,.82)" },
+  action: { minHeight: 48, borderWidth: 1, borderColor: COCKPIT.accent, alignItems: "center", justifyContent: "center", marginTop: 8 },
+  actionText: { color: COCKPIT.accent, fontSize: 12, fontWeight: "900", letterSpacing: .8 },
+  scrim: { flexGrow: 1, justifyContent: "center", padding: 22, backgroundColor: "rgba(0,0,0,.82)" },
   modalCard: { borderWidth: 1, borderColor: COCKPIT.signal, backgroundColor: COCKPIT.panel, padding: 22 },
-  modalEyebrow: { color: COCKPIT.signal, fontSize: 8, fontWeight: "900", letterSpacing: 1.2 },
+  modalEyebrow: { color: COCKPIT.signal, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },
   modalTitle: { color: COCKPIT.text, fontSize: 23, lineHeight: 27, fontWeight: "900", marginTop: 5 },
   modalCopy: { color: COCKPIT.muted, fontSize: 11, lineHeight: 18, marginTop: 12 },
-  primary: { minHeight: 44, backgroundColor: COCKPIT.signal, alignItems: "center", justifyContent: "center", marginTop: 18 },
-  primaryText: { color: COCKPIT.void, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
-  secondary: { minHeight: 40, borderWidth: 1, borderColor: COCKPIT.line, alignItems: "center", justifyContent: "center", marginTop: 8 },
-  secondaryText: { color: COCKPIT.text, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  primary: { minHeight: 48, backgroundColor: COCKPIT.signal, alignItems: "center", justifyContent: "center", marginTop: 18 },
+  primaryText: { color: COCKPIT.void, fontSize: 12, fontWeight: "900", letterSpacing: 1 },
+  secondary: { minHeight: 48, borderWidth: 1, borderColor: COCKPIT.line, alignItems: "center", justifyContent: "center", marginTop: 8 },
+  secondaryText: { color: COCKPIT.text, fontSize: 12, fontWeight: "900", letterSpacing: 1 },
 });

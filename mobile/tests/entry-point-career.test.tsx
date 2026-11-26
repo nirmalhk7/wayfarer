@@ -5,7 +5,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import { registerRootComponent } from "expo";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
-import { Share } from "react-native";
+import { AccessibilityInfo, Animated, Share } from "react-native";
 
 import "../index";
 import { createGame } from "../src/game/engine";
@@ -15,6 +15,9 @@ import { DOCKING_SESSION_STORAGE_KEY, persistDockingCoordinator } from "../src/u
 
 jest.mock("@react-native-async-storage/async-storage", () =>
   jest.requireActual("@react-native-async-storage/async-storage/jest/async-storage-mock"),
+);
+jest.mock("react-native-safe-area-context", () =>
+  jest.requireActual<{ default: unknown }>("react-native-safe-area-context/jest/mock").default,
 );
 jest.mock("expo", () => ({ ...jest.requireActual<typeof import("expo")>("expo"), registerRootComponent: jest.fn() }));
 jest.mock("expo-location", () => ({
@@ -50,11 +53,12 @@ function press(name: string | RegExp) {
   return fireEvent.press(screen.getByRole("button", { name }));
 }
 
-function tab(name: string) {
-  return fireEvent.press(screen.getByRole("tab", { name: new RegExp(name) }));
+function tab(name: "Bridge" | "Chart" | "Station" | "Hold") {
+  return fireEvent.press(screen.getByRole("tab", { name }));
 }
 
 async function order(side: "Buy" | "Sell", commodity: string, quantity: number) {
+  await press("Open trade counter");
   await fireEvent.changeText(screen.getByLabelText(`${commodity} units`), String(quantity));
   await press(new RegExp(`^${side} ${commodity},`));
 }
@@ -71,44 +75,49 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   await waitFor(async () => expect(await campaign("live")).not.toBeNull());
   const liveBefore = await campaign("live");
 
-  await tab("MARKET");
-  expect(screen.getByText("MARKET ENCRYPTED")).toBeTruthy();
-  await tab("CHART");
-  await press(/SIMULATE 10 MIN QUALIFICATION · WFR-00/);
+  await tab("Station");
+  expect(screen.getByText("Market encrypted")).toBeTruthy();
+  await tab("Bridge");
+  await press("Simulate approach to Wayfarer Freeport");
   await press("PAY");
-  await tab("SHIP");
+  await tab("Hold");
   await press("Install reactive hull plating, 380 credits");
-  await tab("MARKET");
-  expect(screen.getAllByText("485 CR").length).toBeGreaterThan(0);
+  await tab("Station");
+  expect(screen.getAllByText(/485 CR available/).length).toBeGreaterThan(0);
 
   for (const commodity of ["Xeno Relics", "Xeno Relics", "Salvaged Circuits", "Ion Fuel"]) {
     await order("Buy", commodity, 1);
     await order("Sell", commodity, 1);
   }
-  await tab("SHIP");
+  await tab("Hold");
   expect(screen.getByText("4 cr short")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Install expanded cargo pods, 320 credits" }).props.accessibilityState.disabled)
     .toBe(true);
-  await tab("MARKET");
+  await tab("Station");
 
+  await press("Open trade counter");
   await fireEvent.changeText(screen.getByLabelText("Ion Fuel units"), "9");
   expect(screen.getByRole("button", { name: "Buy Ion Fuel" }).props.accessibilityState.disabled).toBe(true);
   await order("Buy", "Ion Fuel", 8);
   expect(screen.getByText("Paid 296 cr · 37 cr per unit")).toBeTruthy();
-  await tab("CHART");
+  await tab("Chart");
   const target = /^Select Vela Outpost, unvisited/;
   await press("Port list · 1 of 7 visited");
   await press(target);
-  expect(screen.getByRole("button", { name: target }).props.accessibilityState.selected).toBe(true);
-  await tab("MARKET");
+  expect(screen.getByRole("tab", { name: "Bridge" }).props.accessibilityState.selected).toBe(true);
+  expect(screen.getByRole("header", { name: "Vela Outpost" })).toBeTruthy();
+  expect(screen.getByTestId("vista-flight")).toBeTruthy();
+  await tab("Station");
   expect(screen.getByText("Wayfarer Freeport")).toBeTruthy();
   expect(screen.queryByText("Vela Outpost")).toBeNull();
-  await tab("CHART");
-  await press(/SIMULATE 10 MIN QUALIFICATION · VEL-09/);
+  await tab("Bridge");
+  await press("Simulate approach to Vela Outpost");
+  expect(screen.getByTestId("vista-docked")).toBeTruthy();
+  await tab("Chart");
   expect(screen.getByRole("button", { name: /^Select Vela Outpost, visited/ })).toBeTruthy();
   expect(screen.getByText("Port list · 2 of 7 visited")).toBeTruthy();
 
-  await tab("MARKET");
+  await tab("Station");
   await order("Sell", "Ion Fuel", 8);
   expect(screen.getByText("Sold 8 × Ion Fuel at Vela Outpost")).toBeTruthy();
   expect(screen.getByText("Proceeds 344 cr · 43 cr per unit")).toBeTruthy();
@@ -125,9 +134,9 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   expect((await screen.findByRole("switch", { name: "Training simulator" })).props.value).toBe(true);
   expect(screen.getByText("44 CR")).toBeTruthy();
   expect(screen.getByText("0/12")).toBeTruthy();
-  await tab("MARKET");
+  await tab("Station");
   expect(screen.getByText("Purchase cost 296 cr · Profit 48 cr")).toBeTruthy();
-  expect(screen.getByText("MARKET ENCRYPTED")).toBeTruthy();
+  expect(screen.getByText("Market encrypted")).toBeTruthy();
   expect(Location.getCurrentPositionAsync).not.toHaveBeenCalled();
   expect(Location.watchPositionAsync).not.toHaveBeenCalled();
 });
@@ -155,7 +164,7 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   const network = jest.spyOn(globalThis, "fetch");
   const share = jest.spyOn(Share, "share");
 
-  await tab("SHIP");
+  await tab("Hold");
   expect(screen.getByText(/Live and Training have separate local saves/)).toBeTruthy();
   await press("Reset Training game data");
   await press("Cancel");
@@ -168,9 +177,9 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   await press("Install expanded cargo pods, 320 credits");
   await waitFor(async () => expect((await campaign("training"))?.player.cargoCapacity).toBe(12));
   const trainingAfter = await AsyncStorage.getItem(storageKeyForMode("training"));
-  await tab("CHART");
+  await tab("Bridge");
   await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", false);
-  await tab("SHIP");
+  await tab("Hold");
   await press("Reset Live game data");
   await press("Cancel");
   expect((await campaign("live"))?.origin).toEqual(origin);
@@ -222,23 +231,31 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
 
 test("the registered app fulfils the local contract once across failed save, retry and reload", async () => {
   const network = jest.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Offline test"));
+  jest.spyOn(AccessibilityInfo, "isReduceMotionEnabled").mockResolvedValue(true);
+  const animated = jest.spyOn(Animated, "timing");
   const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
   const gpsReads = jest.mocked(Location.getCurrentPositionAsync).mock.calls.length;
   const mounted = await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
-  await tab("CHART");
+  await tab("Chart");
   expect(screen.getByText(/Public pilot preset unavailable/)).toBeTruthy();
   expect(screen.getByText(/Do not travel to these points/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /enable public pilot/i })).toBeNull();
-  await press(/SIMULATE 10 MIN QUALIFICATION · WFR-00/);
+  await tab("Bridge");
+  expect(screen.getByTestId("vista-flight")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Enter station market" })).toBeNull();
+  await press("Simulate approach to Wayfarer Freeport");
   await press("PAY");
-  await tab("MARKET");
+  expect(screen.getByTestId("vista-docked")).toBeTruthy();
+  await press("Enter station market");
+  expect(screen.getByTestId("vista-market")).toBeTruthy();
   expect(screen.getByText("Cinder Reserve Run")).toBeTruthy();
   await press("Accept cargo contract");
   await screen.findByText("0 / 2 Ion Fuel reserved");
   await order("Buy", "Ion Fuel", 2);
-  await screen.findByText("2 / 2 Ion Fuel reserved");
   expect(screen.getByRole("button", { name: "Sell Ion Fuel" }).props.accessibilityState.disabled).toBe(true);
+  await press("Open contract desk");
+  await screen.findByText("2 / 2 Ion Fuel reserved");
   expect(screen.getByRole("button", { name: "Deliver reserved cargo" }).props.accessibilityState.disabled).toBe(true);
   await waitFor(async () => expect((await campaign("training"))?.delivery?.loaded).toBe(2));
   expect((await campaign("live"))?.delivery).toBeUndefined();
@@ -246,15 +263,18 @@ test("the registered app fulfils the local contract once across failed save, ret
   await mounted.unmount();
   const resumed = await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
-  await tab("MARKET");
+  await tab("Station");
   expect(screen.getByText("2 / 2 Ion Fuel reserved")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Deliver reserved cargo" }).props.accessibilityState.disabled).toBe(true);
-  await tab("CHART");
+  await tab("Chart");
   await press("Port list · 1 of 7 visited");
   await press(/^Select Cinder Exchange, unvisited/);
-  await press(/SIMULATE 10 MIN QUALIFICATION · CND-04/);
+  expect(screen.getByTestId("vista-flight")).toBeTruthy();
+  expect(screen.getByRole("header", { name: "Cinder Exchange" })).toBeTruthy();
+  await press("Simulate approach to Cinder Exchange");
   await press("PAY");
-  await tab("MARKET");
+  expect(screen.getByTestId("vista-docked")).toBeTruthy();
+  await press("Enter station market");
   await waitFor(async () => expect((await campaign("training"))?.dockedPortId).toBe("port-1"));
   const before = (await campaign("training"))!.player.credits;
 
@@ -273,19 +293,21 @@ test("the registered app fulfils the local contract once across failed save, ret
 
   await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
-  await tab("MARKET");
+  await tab("Station");
   expect(screen.getByText("Delivered · 150 cr paid")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Deliver reserved cargo" })).toBeNull();
   expect((await campaign("training"))?.player.credits).toBe(before + 150);
   expect((await campaign("live"))?.delivery).toBeUndefined();
   expect(jest.mocked(Location.getCurrentPositionAsync).mock.calls).toHaveLength(gpsReads);
 
-  await tab("SHIP");
+  await tab("Hold");
+  expect(screen.getByTestId("vista-cargo")).toBeTruthy();
   await press("Reset Training game data");
   await press("Confirm Training reset");
   await screen.findByText("TRAINING GAME DATA RESET");
-  await tab("MARKET");
+  await tab("Station");
   expect(screen.getByRole("button", { name: "Accept cargo contract" })).toBeTruthy();
   expect(screen.queryByText("Delivered · 150 cr paid")).toBeNull();
   expect(network).not.toHaveBeenCalled();
+  expect(animated.mock.calls.some(([, config]) => config.duration === 270)).toBe(false);
 });
