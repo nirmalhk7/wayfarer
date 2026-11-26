@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createGame, type GameState } from "../src/game/engine.ts";
+import { DELIVERY, acceptDelivery, createGame, trade, type GameState } from "../src/game/engine.ts";
 import {
   LEGACY_STORAGE_KEY,
   LIVE_STORAGE_KEY,
@@ -259,4 +259,29 @@ test("decoder migrates a raw v1 save", () => {
   assert.ok(decoded);
   assert.equal(decoded.player.credits, 777);
   assert.equal(decoded.dockedPortId, null);
+});
+
+test("delivery save retains reserved fuel and rejects a reservation larger than its hold", () => {
+  const state = game();
+  const accepted = acceptDelivery(state);
+  const loaded = trade(accepted, { portId: state.ports[0].id, commodityId: DELIVERY.commodityId, quantity: 2, side: "buy" });
+  assert.deepEqual(decodeGameState(encodeGameState(loaded))?.delivery, { status: "active", loaded: 2 });
+  assert.throws(() => encodeGameState({ ...loaded, player: { ...loaded.player, cargo: {}, cargoLots: {} } }), /valid game state/i);
+});
+
+test("v2 saves retain receipt, price anchor and cost lots and accept old cargo", () => {
+  const state = game();
+  const port = state.ports[0];
+  const quote = port.market[0];
+  const order = { portId: port.id, commodityId: quote.commodityId, quantity: 2 };
+  state.player.cargo[quote.commodityId] = 1;
+  const older = decodeGameState(encodeGameState(state));
+  assert.equal(older?.player.cargoLots, undefined);
+  const bought = trade(older!, { ...order, side: "buy" });
+  assert.deepEqual(decodeGameState(encodeGameState(bought)), bought);
+  const sold = trade(bought, { ...order, side: "sell" });
+  assert.equal(sold.lastTrade?.costBasis, null);
+  assert.deepEqual(decodeGameState(encodeGameState(sold)), sold);
+  const invalid = { ...bought, lastTrade: { ...bought.lastTrade, portId: "unknown" } };
+  assert.equal(decodeGameState(JSON.stringify({ version: 2, game: invalid })), null);
 });

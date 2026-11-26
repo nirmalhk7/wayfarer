@@ -10,21 +10,31 @@ the trip once you've stopped.
 ## Play the web prototype
 
 The browser prototype runs on [vinext](https://github.com/cloudflare/vinext).
-Its star chart generates nearby ports. Market rumors hint at prices, and docking
-within range reveals exact prices and lets you buy or sell cargo. Docking can
-also trigger a short encounter with a choice to make. Spend your credits to
-expand the cargo hold or reinforce the hull.
+Buy cargo while docked, set a destination on the star chart or port list, and
+check in at the destination to sell. The market shows the separate buy and sell
+prices, remaining stock, and order totals. Your latest sale receipt shows
+proceeds and profit or loss when the purchase cost is known. First visits fill
+the discovery list and may trigger a short encounter. A profitable sale links
+to ship upgrades. The 250-credit cargo expansion adds four slots, and its button
+shows any credit shortfall.
 
-Play only while safely stopped in a public place. Generated ports are test
-points. To try trading without traveling, turn on **Training Simulator**,
-select a port, choose **Virtually arrive**, then request docking.
+Play only while safely stopped in a public place. Use generated points in
+Training and keep off-site navigation to approved public destinations. The
+public preset remains disabled pending the [desk audit’s field gates](docs/public-pilot-audit.md).
+To try trading locally, turn on **Training Simulator**, buy
+Ion Fuel at Wayfarer Freeport, select Cinder Exchange, and set it as your
+destination. Choose **Virtually arrive**, request docking, and sell the fuel.
+Training has its own saved ship, cargo, and credits.
 
-With location permission, the browser uses your position to center a new star
-chart and check docking range. Progress is saved in browser storage, including
-the starting coordinates and the generated port coordinates. The current
-location reading is held in memory for navigation.
+Choose **Start live check-in** while safely stopped to grant location access and
+center a new chart. The browser requests a fresh location reading when you check
+in or submit a live trade. Market access expires after one minute, and Training
+works without location. Progress is saved in browser storage, including the
+starting and generated port coordinates. Recent location readings stay in memory.
 
 This repository also contains an [Android MVP](mobile/README.md).
+See the [local pilot quickstart](docs/pilot-quickstart.md) for build and offline
+verification commands.
 
 ## Roadmap
 

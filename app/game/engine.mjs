@@ -16,7 +16,8 @@ const PORT_NAMES = [
   "Orchid Anchorage",
   "Kepler Market",
 ];
-const UPGRADE_COSTS = { cargo: 250, hull: 300 };
+export const UPGRADE_COSTS = Object.freeze({ cargo: 250, hull: 300 });
+const DOCKING_RADIUS_METERS = 120;
 
 /** @param {unknown} value @param {string} label */
 function assertFiniteNumber(value, label) {
@@ -123,10 +124,12 @@ export function createGame({ latitude, longitude, seed } = {}) {
     const bearing = index === 0 ? 0 : draw() * Math.PI * 2;
     const market = COMMODITIES.map((commodity, commodityIndex) => {
       const priceFactor = 0.72 + draw() * 0.62;
+      const referencePrice = Math.max(5, Math.round(commodity.basePrice * priceFactor) + index * 2 - commodityIndex);
       return {
         commodityId: commodity.id,
         stock: 18 + Math.floor(draw() * 18),
-        price: Math.max(5, Math.round(commodity.basePrice * priceFactor) + index * 2 - commodityIndex),
+        price: referencePrice,
+        referencePrice,
       };
     });
     return {
@@ -177,10 +180,17 @@ export function getRumors(game, portId) {
  * @param {number} [radiusMeters=120]
  * @returns {boolean}
  */
-export function canDock(game, portId, position, radiusMeters = 120) {
+export function canDock(game, portId, position, radiusMeters = DOCKING_RADIUS_METERS) {
   if (!(radiusMeters >= 0)) throw new RangeError("radiusMeters must be non-negative");
   const port = requirePort(game, portId);
   return distanceMeters(port.position, position) <= radiusMeters;
+}
+
+/** Require the full reported accuracy circle to be within docking range. */
+export function canConfirmDock(game, portId, position) {
+  const accuracy = position?.accuracy;
+  return Number.isFinite(accuracy) && accuracy >= 0 && accuracy <= DOCKING_RADIUS_METERS
+    && canDock(game, portId, position, DOCKING_RADIUS_METERS - accuracy);
 }
 
 /** @param {ReturnType<typeof createGame>} game @param {string} portId */
@@ -206,13 +216,14 @@ function encounterForDock(game, portId) {
 export function dock(game, portId, position, { demo = false } = {}) {
   requirePort(game, portId);
   if (!demo && !canDock(game, portId, position)) throw new RangeError("Too far away to dock");
-  const encounter = encounterForDock(game, portId);
+  const firstVisit = !game.discoveredPortIds.includes(portId);
+  const encounter = firstVisit ? encounterForDock(game, portId) : null;
   return {
     ...game,
     dockedPortId: portId,
-    discoveredPortIds: game.discoveredPortIds.includes(portId)
-      ? [...game.discoveredPortIds]
-      : [...game.discoveredPortIds, portId],
+    discoveredPortIds: firstVisit
+      ? [...game.discoveredPortIds, portId]
+      : game.discoveredPortIds,
     revealedMarkets: { ...game.revealedMarkets, [portId]: true },
     encounter,
   };
@@ -226,6 +237,94 @@ function requireMarketEntry(game, portId, commodityId) {
   return { port, entry };
 }
 
+/** Prices are in credits per unit. Limits reflect current stock, hold, and balance. */
+export function marketQuote(game, portId, commodityId) {
+  const { entry } = requireMarketEntry(game, portId, commodityId);
+  return {
+    ask: entry.price,
+    bid: Math.max(1, Math.floor(entry.price * 0.7)),
+    stock: entry.stock,
+    maxBuy: Math.min(
+      entry.stock,
+      game.player.cargoCapacity - cargoUnits(game.player.cargo),
+      Math.floor(game.player.credits / entry.price),
+    ),
+    maxSell: (game.player.cargo[commodityId] ?? 0) - (commodityId === DELIVERY.commodityId ? contractCargo(game) : 0),
+  };
+}
+
+/** Previous saves may have cargo without a recorded purchase price. */
+function cargoLots(player, commodityId) {
+  const lots = player.cargoLots?.[commodityId] ?? [];
+  const recorded = lots.reduce((total, lot) => total + lot.quantity, 0);
+  const legacy = (player.cargo[commodityId] ?? 0) - recorded;
+  return legacy > 0 ? [{ quantity: legacy, unitCost: null }, ...lots] : lots;
+}
+
+function removeCargo(lots, quantity) {
+  let remaining = quantity;
+  let costBasis = 0;
+  let knownCost = true;
+  const kept = [];
+  for (const lot of lots) {
+    const removed = Math.min(lot.quantity, remaining);
+    if (removed > 0) {
+      if (lot.unitCost === null) knownCost = false;
+      else costBasis += removed * lot.unitCost;
+    }
+    remaining -= removed;
+    if (removed < lot.quantity) kept.push({ ...lot, quantity: lot.quantity - removed });
+  }
+  return { kept, costBasis: knownCost ? costBasis : null };
+}
+
+export const DELIVERY = Object.freeze({ title: "Cinder Reserve Run", commodityId: "fuel", quantity: 2, reward: 150 });
+
+export function deliveryRoute(game) {
+  const origin = game.ports[0];
+  const destination = game.ports.find((port) => port.name === "Cinder Exchange");
+  return origin && destination ? { origin, destination } : null;
+}
+
+function contractCargo(game) {
+  return game.delivery?.status === "active" ? game.delivery.loaded : 0;
+}
+
+export function acceptDelivery(game) {
+  const route = deliveryRoute(game);
+  if (game.delivery) throw new Error("This contract has already been accepted");
+  if (!route || game.dockedPortId !== route.origin.id || game.encounter) {
+    throw new Error("Dock at Wayfarer Freeport to accept this contract");
+  }
+  return { ...game, delivery: { status: "active", loaded: 0 } };
+}
+
+export function completeDelivery(game) {
+  if (game.delivery?.status !== "active") throw new Error("No active delivery");
+  const route = deliveryRoute(game);
+  if (!route || game.dockedPortId !== route.destination.id || game.encounter) {
+    throw new Error("Dock at the delivery port before handing over cargo");
+  }
+  const { commodityId, quantity, reward } = DELIVERY;
+  if (contractCargo(game) < quantity || (game.player.cargo[commodityId] ?? 0) < quantity) {
+    throw new Error("Buy the contract fuel at Wayfarer Freeport first");
+  }
+  const credits = game.player.credits + reward;
+  if (!Number.isSafeInteger(credits)) throw new RangeError("Credit balance is too large");
+  const cargo = { ...game.player.cargo };
+  const lots = { ...game.player.cargoLots };
+  cargo[commodityId] -= quantity;
+  if (cargo[commodityId] === 0) delete cargo[commodityId];
+  const remaining = removeCargo(cargoLots(game.player, commodityId), quantity).kept;
+  if (remaining.length) lots[commodityId] = remaining;
+  else delete lots[commodityId];
+  return {
+    ...game,
+    delivery: { status: "delivered", loaded: 0 },
+    player: { ...game.player, credits, cargo, cargoLots: lots },
+  };
+}
+
 /**
  * Buy at the listed ask or sell at the port's discounted bid for an integral quantity.
  * @param {ReturnType<typeof createGame>} game
@@ -237,41 +336,64 @@ export function trade(game, { portId, commodityId, side, quantity }) {
   if (!Number.isInteger(quantity) || quantity <= 0) throw new RangeError("quantity must be a positive integer");
   if (side !== "buy" && side !== "sell") throw new RangeError("side must be buy or sell");
   const { port, entry } = requireMarketEntry(game, portId, commodityId);
+  const quote = marketQuote(game, portId, commodityId);
   const cargo = { ...game.player.cargo };
+  const lotsByCommodity = { ...game.player.cargoLots };
+  const lots = cargoLots(game.player, commodityId);
   const totalCargo = cargoUnits(cargo);
   let credits = game.player.credits;
   let stock = entry.stock;
+  // An old save keeps its current quote as its reference on the first trade.
+  const referencePrice = entry.referencePrice ?? entry.price;
+  const minAsk = Math.ceil(referencePrice * 9 / 10);
+  const maxAsk = Math.floor(referencePrice * 11 / 10);
   let price = entry.price;
+  const unitPrice = side === "buy" ? quote.ask : quote.bid;
+  const total = unitPrice * quantity;
+  let costBasis = total;
 
   if (side === "buy") {
     if (stock < quantity) throw new RangeError("Not enough stock at this port");
     if (totalCargo + quantity > game.player.cargoCapacity) throw new RangeError("Not enough cargo capacity");
-    const cost = price * quantity;
-    if (credits < cost) throw new RangeError("Not enough credits");
-    credits -= cost;
+    if (credits < total) throw new RangeError("Not enough credits");
+    credits -= total;
     cargo[commodityId] = (cargo[commodityId] ?? 0) + quantity;
+    lotsByCommodity[commodityId] = [...lots, { quantity, unitCost: unitPrice }];
     stock -= quantity;
-    price += quantity;
+    price = Math.min(maxAsk, price + quantity);
   } else {
     if ((cargo[commodityId] ?? 0) < quantity) throw new RangeError("Not enough cargo to sell");
-    const sellPrice = Math.max(1, Math.floor(price * 0.7));
-    credits += sellPrice * quantity;
+    if (quantity > quote.maxSell) throw new RangeError("Cargo is reserved for the contract");
+    credits += total;
+    const removed = removeCargo(lots, quantity);
+    costBasis = removed.costBasis;
+    if (removed.kept.length) lotsByCommodity[commodityId] = removed.kept;
+    else delete lotsByCommodity[commodityId];
     cargo[commodityId] -= quantity;
     if (cargo[commodityId] === 0) delete cargo[commodityId];
     stock += quantity;
-    price = Math.max(1, price - quantity);
+    price = Math.max(minAsk, price - quantity);
   }
 
+  const delivery = game.delivery?.status === "active" && side === "buy"
+    && commodityId === DELIVERY.commodityId && portId === game.ports[0].id
+    ? { ...game.delivery, loaded: Math.min(DELIVERY.quantity, game.delivery.loaded + quantity) }
+    : game.delivery;
   const updatedPort = {
     ...port,
     market: port.market.map((candidate) => candidate.commodityId === commodityId
-      ? { ...candidate, stock, price }
+      ? { ...candidate, stock, price, referencePrice }
       : { ...candidate }),
   };
   return {
     ...game,
     ports: game.ports.map((candidate) => candidate.id === portId ? updatedPort : candidate),
-    player: { ...game.player, credits, cargo },
+    player: { ...game.player, credits, cargo, cargoLots: lotsByCommodity },
+    ...(delivery ? { delivery } : {}),
+    lastTrade: {
+      portId, commodityId, side, quantity, unitPrice, total, costBasis,
+      profit: side === "sell" && costBasis !== null ? total - costBasis : null,
+    },
   };
 }
 
@@ -304,12 +426,15 @@ export function buyUpgrade(game, type) {
  */
 export function resolveEncounter(game, choice) {
   if (!game.encounter) throw new Error("No encounter to resolve");
-  const player = { ...game.player, cargo: { ...game.player.cargo } };
+  const player = { ...game.player, cargo: { ...game.player.cargo }, cargoLots: { ...game.player.cargoLots } };
   const severity = game.encounter.severity;
   if (choice === "run") {
     const commodityId = Object.keys(player.cargo)[0];
     if (commodityId) {
       const lost = Math.min(severity, Math.max(0, player.cargo[commodityId] - 1));
+      if (lost > 0) {
+        player.cargoLots[commodityId] = removeCargo(cargoLots(game.player, commodityId), lost).kept;
+      }
       player.cargo[commodityId] -= lost;
       if (player.cargo[commodityId] === 0) delete player.cargo[commodityId];
     }
@@ -323,5 +448,8 @@ export function resolveEncounter(game, choice) {
   } else {
     throw new RangeError("Unknown encounter choice");
   }
-  return { ...game, player, encounter: null };
+  const delivery = game.delivery?.status === "active"
+    ? { ...game.delivery, loaded: Math.min(game.delivery.loaded, player.cargo[DELIVERY.commodityId] ?? 0) }
+    : game.delivery;
+  return { ...game, player, encounter: null, ...(delivery ? { delivery } : {}) };
 }

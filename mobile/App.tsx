@@ -15,16 +15,23 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
 
 import {
   COMMODITIES,
+  DELIVERY,
+  acceptDelivery,
+  completeDelivery,
+  deliveryRoute,
+  UPGRADE_COST,
   buyUpgrade,
   createGame,
   distanceMeters,
   getRumors,
+  orderLimit,
   resolveEncounter,
   trade,
   type Coordinates,
@@ -41,6 +48,7 @@ import {
 import {
   armSelectedPortGeofence,
   armSelectedPortWithForegroundFallback,
+  disarmSelectedPortGeofence,
   getBackgroundLocationStatus,
   requestBackgroundLocationPermissions,
   subscribeToBackgroundLocationSamples,
@@ -49,6 +57,7 @@ import {
 import { requestAndroidNotificationPermission } from "./src/location/notificationPermission";
 import {
   LEGACY_STORAGE_KEY,
+  LIVE_RESET_MARKER,
   decodeGameState,
   encodeGameState,
   storageKeyForMode,
@@ -70,6 +79,7 @@ import {
 } from "./src/ui/dockingCoordinator";
 import {
   acknowledgePersistedDockingProof,
+  clearPersistedDockingCoordinator,
   loadPersistedDockingCoordinator,
   pausePersistedDockingCoordinator,
   persistDockingCoordinator,
@@ -84,6 +94,16 @@ import {
 } from "./src/ui/DockingStatusCard";
 
 const DEMO_ORIGIN: Coordinates = { latitude: 39.7392, longitude: -104.9903 };
+
+async function clearLiveDockingData() {
+  await Promise.all([
+    clearPersistedDockingCoordinator(),
+    AsyncStorage.removeItem(LEGACY_STORAGE_KEY),
+  ]);
+  const background = await getBackgroundLocationStatus();
+  // Queue disarm even if a previously requested registration is still pending.
+  if (background.available) await disarmSelectedPortGeofence();
+}
 const COLORS = {
   void: "#050b0a",
   deep: "#081310",
@@ -102,12 +122,14 @@ type Tab = "chart" | "market" | "ship";
 
 function Button({
   label,
+  accessibilityLabel = label,
   onPress,
   disabled = false,
   tone = "lime",
   compact = false,
 }: {
   label: string;
+  accessibilityLabel?: string;
   onPress: () => void;
   disabled?: boolean;
   tone?: "lime" | "ghost" | "danger";
@@ -116,7 +138,8 @@ function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [
@@ -240,35 +263,110 @@ function StarChart({
   );
 }
 
-function MarketRow({
-  quote,
-  cargo,
-  onBuy,
-  onSell,
-}: {
+function MarketRow({ quote, game, onOrder }: {
   quote: MarketQuote;
-  cargo: number;
-  onBuy: () => void;
-  onSell: () => void;
+  game: GameState;
+  onOrder: (side: "buy" | "sell", quantity: number) => void;
 }) {
   const commodity = COMMODITIES.find((item) => item.id === quote.commodityId)!;
+  const [units, setUnits] = useState("1");
+  const quantity = Number(units);
+  const valid = /^\d+$/.test(units) && Number.isSafeInteger(quantity) && quantity > 0;
+  const maxBuy = orderLimit(game, quote, "buy");
+  const maxSell = orderLimit(game, quote, "sell");
+  const canBuy = valid && quantity <= maxBuy;
+  const canSell = valid && quantity <= maxSell;
+  const buyLabel = canBuy ? `Buy · ${quote.ask * quantity} cr` : "Buy";
+  const sellLabel = canSell ? `Sell · ${quote.bid * quantity} cr` : "Sell";
   return (
     <View style={styles.marketRow}>
       <View style={styles.commodityIdentity}>
         <View style={styles.commodityBadge}><Text style={styles.commodityBadgeText}>{commodity.symbol}</Text></View>
         <View style={styles.flexOne}>
           <Text style={styles.commodityName}>{commodity.name}</Text>
-          <Text style={styles.commodityMeta}>STOCK {quote.stock} · HOLD {cargo}</Text>
+          <Text style={styles.commodityMeta}>Buy {quote.ask} cr · Sell {quote.bid} cr per unit</Text>
+          <Text style={styles.commodityMeta}>Stock {quote.stock} · In hold {game.player.cargo[quote.commodityId] ?? 0} · Can buy {maxBuy}</Text>
         </View>
       </View>
-      <View style={styles.quoteColumn}>
-        <Text style={styles.askPrice}>{quote.ask} CR</Text>
-        <Text style={styles.bidPrice}>BID {quote.bid}</Text>
-      </View>
       <View style={styles.tradeButtons}>
-        <Button compact label="BUY" onPress={onBuy} />
-        <Button compact disabled={cargo < 1} label="SELL" onPress={onSell} tone="ghost" />
+        <View>
+          <Text style={styles.commodityMeta}>Units</Text>
+          <TextInput
+            accessibilityLabel={`${commodity.name} units`}
+            keyboardType="number-pad"
+            maxLength={12}
+            onChangeText={setUnits}
+            selectTextOnFocus
+            style={styles.orderQuantity}
+            value={units}
+          />
+        </View>
+        <Button compact disabled={!canBuy} label={buyLabel}
+          accessibilityLabel={`Buy ${commodity.name}${canBuy ? `, ${quote.ask * quantity} credits` : ""}`}
+          onPress={() => onOrder("buy", quantity)} />
+        <Button compact disabled={!canSell} label={sellLabel}
+          accessibilityLabel={`Sell ${commodity.name}${canSell ? `, ${quote.bid * quantity} credits` : ""}`}
+          onPress={() => onOrder("sell", quantity)} tone="ghost" />
       </View>
+    </View>
+  );
+}
+
+function CargoContract({ game, dockedPortId, saving, onAccept, onDeliver }: {
+  game: GameState;
+  dockedPortId: string | undefined;
+  saving: boolean;
+  onAccept: () => void;
+  onDeliver: () => void;
+}) {
+  const route = deliveryRoute(game);
+  if (!route) return null;
+  const delivery = game.delivery;
+  return (
+    <View style={styles.receipt}>
+      <Text style={styles.receiptTitle} accessibilityRole="header">{DELIVERY.title}</Text>
+      <Text style={styles.receiptLine}>
+        {route.origin.name} → {route.destination.name} · {DELIVERY.quantity} Ion Fuel · Reward {DELIVERY.reward} cr
+      </Text>
+      {!delivery && <>
+        <Text style={styles.receiptLine}>Dock at {route.origin.name} to accept.</Text>
+        <Button label="Accept cargo contract" disabled={saving || Boolean(game.encounter) || dockedPortId !== route.origin.id}
+          onPress={onAccept} tone="ghost" />
+      </>}
+      {delivery?.status === "active" && <>
+        <Text style={styles.receiptLine} accessibilityLiveRegion="polite">{delivery.loaded} / {DELIVERY.quantity} Ion Fuel reserved</Text>
+        <Text style={styles.receiptLine}>{delivery.loaded < DELIVERY.quantity
+          ? `Buy Ion Fuel at ${route.origin.name}. Your contract fuel is reserved from sale.`
+          : `Select ${route.destination.name} on the chart or port list and dock there to deliver.`}</Text>
+        <Button label="Deliver reserved cargo" disabled={saving || Boolean(game.encounter)
+          || dockedPortId !== route.destination.id || delivery.loaded < DELIVERY.quantity}
+          onPress={onDeliver} tone="ghost" />
+      </>}
+      {delivery?.status === "delivered" && <Text style={styles.receiptLine}>Delivered · {DELIVERY.reward} cr paid</Text>}
+    </View>
+  );
+}
+
+function LastTrade({ game, onUpgrades }: { game: GameState; onUpgrades: () => void }) {
+  const receipt = game.lastTrade;
+  if (!receipt) return null;
+  const commodity = COMMODITIES.find((item) => item.id === receipt.commodityId);
+  const port = game.ports.find(({ id }) => id === receipt.portId);
+  const total = receipt.unitPrice * receipt.quantity;
+  const profit = receipt.side === "sell" && receipt.costBasis !== null ? total - receipt.costBasis : null;
+  return (
+    <View style={styles.receipt}>
+      <Text style={styles.receiptTitle} accessibilityRole="header">Last trade receipt</Text>
+      <Text style={styles.receiptLine}>
+        {`${receipt.side === "buy" ? "Bought" : "Sold"} ${receipt.quantity} × ${commodity?.name} at ${port?.name}`}
+      </Text>
+      <Text style={styles.receiptLine}>
+        {`${receipt.side === "buy" ? "Paid" : "Proceeds"} ${total} cr · ${receipt.unitPrice} cr per unit`}
+      </Text>
+      {receipt.side === "sell" && <Text style={styles.receiptLine}>{profit === null
+        ? "Purchase cost unavailable for cargo from an older save."
+        : `Purchase cost ${receipt.costBasis} cr · ${profit < 0 ? "Loss" : "Profit"} ${Math.abs(profit)} cr`}</Text>}
+      {(profit ?? 0) > 0 && <Button label="View ship upgrades" onPress={onUpgrades} tone="ghost" />}
     </View>
   );
 }
@@ -363,8 +461,20 @@ export default function App() {
     training: createDockingCoordinator({ id: "port-0", coords: DEMO_ORIGIN }),
   });
   const [tab, setTab] = useState<Tab>("chart");
+  const [showPortList, setShowPortList] = useState(false);
   const [booting, setBooting] = useState(true);
   const [saveReady, setSaveReady] = useState(false);
+  const [livePaused, setLivePaused] = useState(false);
+  const livePausedRef = useRef(false);
+  const [liveStartAttempt, setLiveStartAttempt] = useState(0);
+  const [resetMode, setResetMode] = useState<CampaignMode | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [contractSaving, setContractSaving] = useState(false);
+  const contractSavingRef = useRef(false);
+  const liveProofWrites = useRef(0);
+  const deferredCoordinator = useRef<DockingCoordinator | null>(null);
+  const resetInProgress = useRef(false);
+  const emptyTrainingSave = useRef<GameState | null>(null);
   const [foregroundOnly, setForegroundOnly] = useState(true);
   const [showBackgroundExplanation, setShowBackgroundExplanation] = useState(false);
   const [locationStatus, setLocationStatus] = useState("ACQUIRING NAV SIGNAL");
@@ -372,11 +482,19 @@ export default function App() {
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
   const campaignsRef = useRef(campaigns);
   const selectedPortIdsRef = useRef(selectedPortIds);
-  const campaignSaveQueue = useRef(createLatestWriteQueue<Campaigns>(async (snapshot) => {
-    await Promise.all([
-      AsyncStorage.setItem(storageKeyForMode("live"), encodeGameState(snapshot.live)),
-      AsyncStorage.setItem(storageKeyForMode("training"), encodeGameState(snapshot.training)),
-    ]);
+  const liveSaveQueue = useRef(createLatestWriteQueue<GameState | null>(async (snapshot) => {
+    if (snapshot) {
+      await AsyncStorage.setItem(storageKeyForMode("live"), encodeGameState(snapshot));
+    } else {
+      // Mark Live as paused before removing the old coordinate-bearing data.
+      await AsyncStorage.setItem(storageKeyForMode("live"), LIVE_RESET_MARKER);
+      await clearLiveDockingData();
+    }
+  }));
+  const trainingSaveQueue = useRef(createLatestWriteQueue<GameState | null>(async (snapshot) => {
+    const key = storageKeyForMode("training");
+    if (snapshot) await AsyncStorage.setItem(key, encodeGameState(snapshot));
+    else await AsyncStorage.removeItem(key);
   }));
 
   const game = campaigns[mode];
@@ -399,10 +517,6 @@ export default function App() {
   const liveAuthorizedActiveAt = liveAuthorizedSession?.pausedAt === null
     ? liveAuthorizedSession.lastValidAt
     : null;
-
-  function setGame(update: (current: GameState) => GameState) {
-    setCampaigns((current) => updateCampaign(current, mode, update));
-  }
 
   useEffect(() => { campaignsRef.current = campaigns; }, [campaigns]);
   useEffect(() => { selectedPortIdsRef.current = selectedPortIds; }, [selectedPortIds]);
@@ -428,6 +542,11 @@ export default function App() {
     next: DockingCoordinator,
     gameSnapshot = campaignsRef.current.live,
   ) => {
+    if (livePausedRef.current) return;
+    if (contractSavingRef.current) {
+      deferredCoordinator.current = next;
+      return;
+    }
     const transition = resolveCoordinatorTransition(gameSnapshot, next);
     if (transition.proofId === null) {
       setCoordinators((current) => ({ ...current, live: transition.coordinator }));
@@ -440,13 +559,12 @@ export default function App() {
       return;
     }
 
+    liveProofWrites.current += 1;
     try {
       // The game must reach durable storage first. A crash before proof
       // acknowledgment leaves an unconsumed coordinator proof that can replay.
-      await campaignSaveQueue.current.writeThrough({
-        ...campaignsRef.current,
-        live: transition.game,
-      });
+      await liveSaveQueue.current.writeThrough(transition.game);
+      if (livePausedRef.current) return;
       setCampaigns((current) => current.live === gameSnapshot
         ? { ...current, live: transition.game }
         : current);
@@ -457,14 +575,24 @@ export default function App() {
         : "DEPARTED · DOCKING LINK REVOKED");
     } catch {
       setNotice("SAVE FAILED · DOCKING PROOF RETAINED");
+    } finally {
+      liveProofWrites.current -= 1;
     }
   });
+
+  useEffect(() => {
+    if (contractSaving || !deferredCoordinator.current) return;
+    const next = deferredCoordinator.current;
+    deferredCoordinator.current = null;
+    void processLiveCoordinator(next);
+  }, [contractSaving]);
 
   useEffect(() => subscribeToDockingCoordinator((next) => {
     void processLiveCoordinator(next);
   }), []);
 
   useEffect(() => subscribeToBackgroundLocationSamples((sample) => {
+    if (livePausedRef.current) return;
     setPositions((current) => ({
       ...current,
       live: { latitude: sample.latitude, longitude: sample.longitude },
@@ -474,9 +602,10 @@ export default function App() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active" || booting) return;
+      if (state !== "active" || booting || livePausedRef.current) return;
       void getBackgroundLocationStatus()
         .then((status) => {
+          if (livePausedRef.current) return;
           if (!status.available) {
             setForegroundOnly(true);
             setNotice("BACKGROUND TASKS UNAVAILABLE · FOREGROUND ONLY");
@@ -505,23 +634,57 @@ export default function App() {
     async function boot() {
       let live: GameState | null = null;
       let training: GameState | null = null;
+      let resetPending = false;
       try {
         const [liveRaw, trainingRaw, legacyRaw] = await Promise.all([
           AsyncStorage.getItem(storageKeyForMode("live")),
           AsyncStorage.getItem(storageKeyForMode("training")),
           AsyncStorage.getItem(LEGACY_STORAGE_KEY),
         ]);
-        live = decodeGameState(liveRaw ?? legacyRaw);
+        resetPending = liveRaw === LIVE_RESET_MARKER;
+        live = resetPending ? null : decodeGameState(liveRaw ?? legacyRaw);
         training = decodeGameState(trainingRaw);
       } catch {
         // Corrupt or unavailable saves start isolated local campaigns.
       }
 
+      const keepLivePaused = () => {
+        const nextTraining = training ?? initialCampaigns.training;
+        setCampaigns({ live: initialCampaigns.live, training: nextTraining });
+        setPositions({ live: DEMO_ORIGIN, training: nextTraining.origin });
+        setLocationStatus("LIVE NAVIGATION PAUSED");
+        setSaveReady(true);
+        setBooting(false);
+      };
+      if (resetPending) {
+        livePausedRef.current = true;
+        setLivePaused(true);
+        try {
+          await clearLiveDockingData();
+        } catch {
+          if (!cancelled) {
+            keepLivePaused();
+            setNotice("LIVE CLEANUP INCOMPLETE · TRY RESET AGAIN");
+          }
+          return;
+        }
+        if (cancelled) return;
+        if (liveStartAttempt === 0) {
+          keepLivePaused();
+          return;
+        }
+      }
+
       const permission = await Location.requestForegroundPermissionsAsync();
       if (cancelled) return;
+      if (permission.status !== "granted" && resetPending) {
+        keepLivePaused();
+        setNotice("LOCATION DENIED · LIVE NAVIGATION REMAINS PAUSED");
+        return;
+      }
       if (permission.status !== "granted") {
         const nextLive = live ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-live-v2" });
-        const nextTraining = training ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-training-v2" });
+        const nextTraining = training ?? initialCampaigns.training;
         setCampaigns({ live: nextLive, training: nextTraining });
         setPositions({ live: nextLive.origin, training: nextTraining.origin });
         setMode("training");
@@ -540,7 +703,7 @@ export default function App() {
           longitude: current.coords.longitude,
         };
         const nextLive = live ?? createGame({ origin: coordinates, seed: "wayfarer-mobile-live-v2" });
-        const nextTraining = training ?? createGame({ origin: coordinates, seed: "wayfarer-mobile-training-v2" });
+        const nextTraining = training ?? initialCampaigns.training;
         // A foreground process restart is a discontinuity: pause first so the
         // next fix can recover, but never earns the unobserved wall-clock gap.
         const persisted = await pausePersistedDockingCoordinator()
@@ -567,6 +730,11 @@ export default function App() {
           training: createDockingCoordinator({ id: trainingTarget.id, coords: trainingTarget.position }),
         });
         await persistDockingCoordinator(liveCoordinator);
+        if (resetPending) {
+          await liveSaveQueue.current.writeThrough(nextLive);
+          livePausedRef.current = false;
+          setLivePaused(false);
+        }
         setLocationStatus(`GPS LOCK · ±${Math.round(current.coords.accuracy ?? 0)} M`);
 
         let backgroundGranted = false;
@@ -602,7 +770,7 @@ export default function App() {
         setSaveReady(true);
         setBooting(false);
 
-        locationSubscription.current = await Location.watchPositionAsync(
+        const watcher = await Location.watchPositionAsync(
           {
             // Foreground-only navigation remains playable without continuous
             // GPS. High accuracy is reserved for the geofence-triggered task.
@@ -611,6 +779,7 @@ export default function App() {
             timeInterval: 10_000,
           },
           (update) => {
+            if (cancelled || livePausedRef.current) return;
             setPositions((positions) => ({
               ...positions,
               live: { latitude: update.coords.latitude, longitude: update.coords.longitude },
@@ -619,9 +788,16 @@ export default function App() {
             void processPersistedForegroundSamples([toLocationSample(update)]);
           },
         );
+        if (cancelled || livePausedRef.current) watcher.remove();
+        else locationSubscription.current = watcher;
       } catch {
+        if (resetPending && livePausedRef.current) {
+          keepLivePaused();
+          setNotice("LIVE LOCATION UNAVAILABLE · TRY AGAIN WHILE SAFELY STOPPED");
+          return;
+        }
         const nextLive = live ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-live-v2" });
-        const nextTraining = training ?? createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-training-v2" });
+        const nextTraining = training ?? initialCampaigns.training;
         setCampaigns({ live: nextLive, training: nextTraining });
         setPositions({ live: nextLive.origin, training: nextTraining.origin });
         setMode("training");
@@ -636,17 +812,64 @@ export default function App() {
       cancelled = true;
       locationSubscription.current?.remove();
     };
-  }, []);
+  }, [initialCampaigns, liveStartAttempt]);
+
+  const liveCampaign = campaigns.live;
+  const trainingCampaign = campaigns.training;
+  useEffect(() => {
+    if (!saveReady || livePaused || livePausedRef.current) return;
+    void liveSaveQueue.current.schedule(liveCampaign)
+      .catch(() => setNotice("SAVE FAILED · LIVE CAMPAIGN REMAINS IN MEMORY"));
+  }, [liveCampaign, livePaused, saveReady]);
 
   useEffect(() => {
-    if (!saveReady) return;
-    void campaignSaveQueue.current.schedule(campaigns)
-      .catch(() => setNotice("SAVE FAILED · CAMPAIGN REMAINS IN MEMORY"));
-  }, [campaigns, saveReady]);
+    if (!saveReady || resetInProgress.current || trainingCampaign === emptyTrainingSave.current) return;
+    void trainingSaveQueue.current.schedule(trainingCampaign)
+      .catch(() => setNotice("SAVE FAILED · TRAINING CAMPAIGN REMAINS IN MEMORY"));
+  }, [trainingCampaign, saveReady]);
 
-  function mutate(action: () => GameState, success: string) {
+  async function resetCampaign() {
+    if (!resetMode || resetInProgress.current || contractSavingRef.current) return;
+    const target = resetMode;
+    resetInProgress.current = true;
+    setResetting(true);
+    if (target === "live") {
+      livePausedRef.current = true;
+      setLivePaused(true);
+      setLocationStatus("LIVE NAVIGATION PAUSED");
+      locationSubscription.current?.remove();
+      locationSubscription.current = null;
+    }
     try {
-      setGame(action);
+      await (target === "live" ? liveSaveQueue : trainingSaveQueue).current.writeThrough(null);
+      setNotice(target === "live" ? "LIVE GAME DATA RESET" : "TRAINING GAME DATA RESET");
+    } catch {
+      setNotice("RESET INCOMPLETE · TRY AGAIN");
+    } finally {
+      const fresh = initialCampaigns[target];
+      if (target === "training") emptyTrainingSave.current = fresh;
+      const port = fresh.ports[0];
+      setCampaigns((current) => ({ ...current, [target]: fresh }));
+      setCoordinators((current) => ({
+        ...current,
+        [target]: createDockingCoordinator({ id: port.id, coords: port.position }),
+      }));
+      setPositions((current) => ({ ...current, [target]: fresh.origin }));
+      setSelectedPortIds((current) => ({ ...current, [target]: port.id }));
+      resetInProgress.current = false;
+      setResetting(false);
+      setResetMode(null);
+    }
+  }
+
+  function mutate(action: (current: GameState) => GameState, success: string) {
+    if (resetInProgress.current || contractSavingRef.current || (mode === "live" && livePausedRef.current)) return;
+    try {
+      const base = campaignsRef.current[mode];
+      const updated = action(base);
+      setCampaigns((current) => current[mode] === base
+        ? updateCampaign(current, mode, () => updated)
+        : current);
       setNotice(success);
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch (error) {
@@ -655,7 +878,32 @@ export default function App() {
     }
   }
 
+  async function saveContract(action: (current: GameState) => GameState, message: string) {
+    if (contractSavingRef.current || resetInProgress.current || !dockedPort
+      || (mode === "live" && livePausedRef.current)) return;
+    if (mode === "live" && liveProofWrites.current > 0) {
+      setNotice("Docking is being saved. Try the contract again in a moment.");
+      return;
+    }
+    contractSavingRef.current = true;
+    setContractSaving(true);
+    try {
+      const current = campaignsRef.current[mode];
+      if (activeDockedPort(current, coordinator)?.id !== dockedPort.id) return;
+      const next = action(current);
+      await (mode === "live" ? liveSaveQueue : trainingSaveQueue).current.writeThrough(next);
+      setCampaigns((previous) => ({ ...previous, [mode]: next }));
+      setNotice(message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Contract could not be saved. Try again.");
+    } finally {
+      contractSavingRef.current = false;
+      setContractSaving(false);
+    }
+  }
+
   function simulateQualification() {
+    if (contractSavingRef.current) return;
     let next = createDockingCoordinator({ id: selectedPort.id, coords: selectedPort.position });
     const start = Date.now();
     for (let elapsed = 0; elapsed <= 600_000; elapsed += 15_000) {
@@ -680,6 +928,7 @@ export default function App() {
   }
 
   async function selectPort(portId: string) {
+    if (contractSavingRef.current) return;
     const port = game.ports.find((candidate) => candidate.id === portId);
     if (!port) return;
     setSelectedPortIds((current) => ({ ...current, [mode]: portId }));
@@ -690,9 +939,10 @@ export default function App() {
       }));
     } else {
       try {
+        if (livePausedRef.current) return;
         const next = await persistSelectedDockingTarget({ id: port.id, coords: port.position });
         setCoordinators((current) => ({ ...current, live: next }));
-        if (!foregroundOnly) {
+        if (!foregroundOnly && !livePausedRef.current) {
           await armSelectedPortGeofence({
             portId: port.id,
             latitude: port.position.latitude,
@@ -715,6 +965,7 @@ export default function App() {
       const permissions = await requestBackgroundLocationPermissions();
       const granted = permissions.background === "granted";
       setForegroundOnly(!granted);
+      if (livePausedRef.current) return;
       if (!granted) {
         setNotice("BACKGROUND PERMISSION DENIED · FOREGROUND ONLY");
         return;
@@ -748,20 +999,16 @@ export default function App() {
     }
   }
 
-  function executeTrade(quote: MarketQuote, side: "buy" | "sell") {
+  function executeTrade(quote: MarketQuote, side: "buy" | "sell", quantity: number) {
+    if (!dockedPort) return;
     mutate(
-      () => trade(game, {
-        portId: dockedPort?.id ?? "",
-        commodityId: quote.commodityId,
-        side,
-        quantity: 1,
-      }),
-      `${side === "buy" ? "PURCHASED" : "SOLD"} · ${quote.commodityId.replaceAll("_", " ").toUpperCase()}`,
+      (current) => trade(current, { portId: dockedPort.id, commodityId: quote.commodityId, side, quantity }),
+      side === "buy" ? "CARGO LOADED · SELECT A DESTINATION ON THE CHART" : "SALE COMPLETE · SEE YOUR TRADE RECEIPT",
     );
   }
 
   function handleEncounter(choice: "run" | "pay" | "fight" | "help") {
-    mutate(() => resolveEncounter(game, choice), `CONTACT RESOLVED · ${choice.toUpperCase()}`);
+    mutate((current) => resolveEncounter(current, choice), `CONTACT RESOLVED · ${choice.toUpperCase()}`);
   }
 
   if (booting) {
@@ -804,6 +1051,7 @@ export default function App() {
       </View>
 
       <ScrollView
+        key={tab}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -813,9 +1061,35 @@ export default function App() {
             <SectionHeader eyebrow="NAVIGATOR" title="LOCAL STAR CHART" />
             <View style={styles.testContentNotice}>
               <Text style={styles.testContentNoticeText}>
-                SYNTHETIC TEST PORTS · NOT VERIFIED PUBLIC PLACES
+                Public pilot preset unavailable. Desk check complete. Field validation pending.
+              </Text>
+              <Text style={styles.testContentNoticeText}>
+                The chart shows generated test points. Use Training for route tests. Do not travel to these points.
               </Text>
             </View>
+            <Pressable accessibilityRole="button" accessibilityState={{ expanded: showPortList }}
+              onPress={() => setShowPortList((shown) => !shown)} style={styles.portListRow}>
+              <Text style={styles.commodityName}>Port list · {game.discoveredPortIds.length} of {game.ports.length} visited</Text>
+            </Pressable>
+            {showPortList && <View style={styles.panel}>
+              {game.ports.map((port) => {
+                const visited = game.discoveredPortIds.includes(port.id);
+                const range = formatDistance(distanceMeters(position, port.position));
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: selectedPort.id === port.id }}
+                    accessibilityLabel={`Select ${port.name}, ${visited ? "visited" : "unvisited"}, ${range}`}
+                    key={port.id}
+                    onPress={() => { void selectPort(port.id); }}
+                    style={styles.portListRow}
+                  >
+                    <Text style={[styles.commodityName, selectedPort.id === port.id && styles.limeText]}>{port.name}</Text>
+                    <Text style={styles.commodityMeta}>{visited ? "Visited" : "Unvisited"} · {range}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>}
             <View style={styles.panel}>
               <StarChart
                 game={game}
@@ -839,11 +1113,19 @@ export default function App() {
                 </View>
               </View>
 
-              <DockingStatusCard
-                coordinator={coordinator}
-                foregroundOnly={mode === "live" && foregroundOnly}
-                onEnableBackground={beginBackgroundPermissionRequest}
-              />
+              {mode === "live" && livePaused ? (
+                <Button label="Start live navigation" onPress={() => {
+                  setSaveReady(false);
+                  setBooting(true);
+                  setLiveStartAttempt((attempt) => attempt + 1);
+                }} />
+              ) : (
+                <DockingStatusCard
+                  coordinator={coordinator}
+                  foregroundOnly={mode === "live" && foregroundOnly}
+                  onEnableBackground={beginBackgroundPermissionRequest}
+                />
+              )}
 
               <View style={styles.rumorGrid}>
                 {getRumors(game, selectedPort.id).slice(0, 3).map((rumor) => (
@@ -861,7 +1143,9 @@ export default function App() {
                 </View>
                 <Switch
                   accessibilityLabel="Training simulator"
+                  disabled={contractSaving}
                   onValueChange={(enabled) => {
+                    if (contractSavingRef.current) return;
                     setMode(enabled ? "training" : "live");
                     setNotice(enabled
                       ? "TRAINING CAMPAIGN ACTIVE · LIVE PROGRESS UNCHANGED"
@@ -908,7 +1192,11 @@ export default function App() {
 
         {tab === "market" && (
           <>
-            <SectionHeader eyebrow="AUTHENTICATED EXCHANGE" title={dockedPort?.name ?? "NO DOCKING LINK"} />
+            <SectionHeader eyebrow="PORT MARKET" title={dockedPort?.name ?? "NO DOCKING LINK"} />
+            <CargoContract game={game} dockedPortId={dockedPort?.id} saving={contractSaving}
+              onAccept={() => { void saveContract(acceptDelivery, "Contract accepted. Buy Ion Fuel at Wayfarer Freeport."); }}
+              onDeliver={() => { void saveContract(completeDelivery, `Delivery complete. Received ${DELIVERY.reward} cr.`); }} />
+            <LastTrade game={game} onUpgrades={() => setTab("ship")} />
             {!dockedPort ? (
               <View style={styles.emptyCard}>
                 <Text style={styles.emptyGlyph}>⌁</Text>
@@ -930,10 +1218,9 @@ export default function App() {
                 </View>
                 {dockedPort.market.map((quote) => (
                   <MarketRow
-                    cargo={game.player.cargo[quote.commodityId] ?? 0}
-                    key={quote.commodityId}
-                    onBuy={() => executeTrade(quote, "buy")}
-                    onSell={() => executeTrade(quote, "sell")}
+                    key={`${mode}-${dockedPort.id}-${quote.commodityId}`}
+                    game={game}
+                    onOrder={(side, quantity) => executeTrade(quote, side, quantity)}
                     quote={quote}
                   />
                 ))}
@@ -946,6 +1233,29 @@ export default function App() {
         {tab === "ship" && (
           <>
             <SectionHeader eyebrow="SHIP SYSTEMS" title="THE WAYWARD" />
+            <SectionHeader eyebrow="SHIPYARD" title="UPGRADES" />
+            {([
+              ["cargo", "Install expanded cargo pods", "+4 cargo capacity"],
+              ["hull", "Install reactive hull plating", "+1 hull integrity"],
+            ] as const).map(([id, label, benefit]) => {
+              const cost = UPGRADE_COST[id];
+              const shortfall = cost - game.player.credits;
+              return (
+                <View key={id} style={styles.upgradeCard}>
+                  <View style={styles.flexOne}>
+                    <Text style={styles.upgradeTitle}>{label}</Text>
+                    <Text style={styles.upgradeCopy}>{benefit} · {cost} cr</Text>
+                    {shortfall > 0 && <Text style={styles.upgradeCopy}>{shortfall} cr short</Text>}
+                  </View>
+                  <Button compact disabled={shortfall > 0 || (mode === "live" && livePaused)} label="Install"
+                    accessibilityLabel={`${label}, ${cost} credits`}
+                    onPress={() => mutate(
+                      (current) => buyUpgrade(current, id),
+                      id === "cargo" ? "CARGO PODS INSTALLED · 4 SLOTS ADDED" : "HULL PLATING INSTALLED",
+                    )} />
+                </View>
+              );
+            })}
             <View style={styles.shipHero}>
               <View style={styles.shipSilhouette}>
                 <View style={styles.shipNose} />
@@ -976,30 +1286,17 @@ export default function App() {
               })}
             </View>
 
-            <SectionHeader eyebrow="SHIPYARD" title="UPGRADES" />
-            <View style={styles.upgradeCard}>
-              <View style={styles.flexOne}>
-                <Text style={styles.upgradeTitle}>EXPANDED CARGO PODS</Text>
-                <Text style={styles.upgradeCopy}>+4 cargo capacity · 320 CR</Text>
-              </View>
-              <Button
-                compact
-                disabled={game.player.credits < 320}
-                label="INSTALL"
-                onPress={() => mutate(() => buyUpgrade(game, "cargo"), "CARGO PODS INSTALLED")}
-              />
-            </View>
-            <View style={styles.upgradeCard}>
-              <View style={styles.flexOne}>
-                <Text style={styles.upgradeTitle}>REACTIVE HULL PLATING</Text>
-                <Text style={styles.upgradeCopy}>+1 hull integrity · 380 CR</Text>
-              </View>
-              <Button
-                compact
-                disabled={game.player.credits < 380}
-                label="INSTALL"
-                onPress={() => mutate(() => buyUpgrade(game, "hull"), "HULL PLATING INSTALLED")}
-              />
+            <SectionHeader eyebrow="ON THIS DEVICE" title="Local game data" />
+            <View style={styles.receipt}>
+              <Text style={styles.receiptLine}>
+                Live and Training have separate local saves for ship, cargo, markets, visits, contract and the last receipt.
+                Live saves include starting and generated port coordinates plus the selected docking target and qualification progress.
+                New Training saves use a simulated map. Older Training saves may include coordinates from their initial location.
+                Raw location readings and movement trails are not saved.
+              </Text>
+              <Text style={styles.receiptLine}>Android manages app permissions and system backups separately.</Text>
+              <Button label={`Reset ${mode === "live" ? "Live" : "Training"} game data`}
+                disabled={contractSaving} onPress={() => setResetMode(mode)} tone="ghost" />
             </View>
           </>
         )}
@@ -1027,6 +1324,23 @@ export default function App() {
         ))}
       </View>
 
+      <Modal visible={resetMode !== null} transparent onRequestClose={() => { if (!resetting) setResetMode(null); }}>
+        <View style={styles.modalScrim}>
+          <View style={styles.encounterCard} accessibilityViewIsModal>
+            <Text style={styles.receiptTitle} accessibilityRole="header">
+              {resetMode === "live" ? "Reset Live game data?" : "Reset Training game data?"}
+            </Text>
+            <Text style={styles.receiptLine}>
+              {resetMode === "live"
+                ? "This permanently removes Live progress, coordinates and docking data from the app. Your Training save is kept."
+                : "This permanently removes Training progress and its saved coordinates from the app. Your Live save is kept."}
+            </Text>
+            <Button label="Cancel" disabled={resetting} tone="ghost" onPress={() => setResetMode(null)} />
+            <Button label={resetMode === "live" ? "Confirm Live reset" : "Confirm Training reset"}
+              disabled={resetting} tone="danger" onPress={() => { void resetCampaign(); }} />
+          </View>
+        </View>
+      </Modal>
       <EncounterModal game={game} onResolve={handleEncounter} />
       <BackgroundPermissionModal
         onCancel={() => setShowBackgroundExplanation(false)}
@@ -1100,7 +1414,7 @@ const styles = StyleSheet.create({
   trainingTitle: { color: COLORS.cream, fontSize: 10, fontWeight: "800", letterSpacing: .6 },
   trainingCopy: { color: COLORS.muted, fontSize: 9, marginTop: 2 },
   button: { minHeight: 46, borderWidth: 1, borderColor: COLORS.lime, backgroundColor: COLORS.lime, alignItems: "center", justifyContent: "center", paddingHorizontal: 14, marginTop: 8 },
-  buttonCompact: { minHeight: 32, paddingHorizontal: 10, marginTop: 0 },
+  buttonCompact: { minHeight: 48, paddingHorizontal: 10, marginTop: 0 },
   buttonLime: { backgroundColor: COLORS.lime },
   buttonGhost: { backgroundColor: "transparent", borderColor: COLORS.line },
   buttonDanger: { backgroundColor: COLORS.coral, borderColor: COLORS.coral },
@@ -1123,16 +1437,18 @@ const styles = StyleSheet.create({
   marketBannerRight: { alignItems: "flex-end" },
   marketBannerLabel: { color: COLORS.muted, fontSize: 7, letterSpacing: 1.2 },
   marketBannerValue: { color: COLORS.lime, fontSize: 12, fontWeight: "900", marginTop: 3 },
-  marketRow: { minHeight: 78, flexDirection: "row", alignItems: "center", borderTopWidth: 1, borderColor: COLORS.line, gap: 8, paddingVertical: 9 },
+  marketRow: { borderTopWidth: 1, borderColor: COLORS.line, gap: 8, paddingVertical: 12 },
   commodityIdentity: { flex: 1.25, flexDirection: "row", alignItems: "center", gap: 8 },
   commodityBadge: { width: 30, height: 30, borderWidth: 1, borderColor: COLORS.line, alignItems: "center", justifyContent: "center" },
   commodityBadgeText: { color: COLORS.lime, fontSize: 8, fontWeight: "900" },
-  commodityName: { color: COLORS.cream, fontSize: 10, fontWeight: "800" },
-  commodityMeta: { color: COLORS.muted, fontSize: 7, marginTop: 4 },
-  quoteColumn: { width: 54, alignItems: "flex-end" },
-  askPrice: { color: COLORS.amber, fontSize: 11, fontWeight: "900" },
-  bidPrice: { color: COLORS.muted, fontSize: 7, marginTop: 4 },
-  tradeButtons: { width: 53, gap: 5 },
+  commodityName: { color: COLORS.cream, fontSize: 14, fontWeight: "800" },
+  commodityMeta: { color: COLORS.muted, fontSize: 12, marginTop: 4 },
+  tradeButtons: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: 8 },
+  orderQuantity: { minWidth: 54, minHeight: 48, color: COLORS.cream, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 8 },
+  portListRow: { minHeight: 48, justifyContent: "center", borderTopWidth: 1, borderColor: COLORS.line, paddingVertical: 8 },
+  receipt: { gap: 7, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel },
+  receiptTitle: { color: COLORS.lime, fontSize: 14, fontWeight: "800" },
+  receiptLine: { color: COLORS.cream, fontSize: 13 },
   spreadNote: { color: COLORS.muted, fontSize: 8, lineHeight: 13, marginTop: 12 },
   shipHero: { height: 220, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.deep, alignItems: "center", justifyContent: "center", marginBottom: 12, overflow: "hidden" },
   shipSilhouette: { width: 190, height: 92, alignItems: "center", justifyContent: "center" },
@@ -1149,7 +1465,7 @@ const styles = StyleSheet.create({
   manifestQuantity: { color: COLORS.muted, fontSize: 11, fontWeight: "900" },
   upgradeCard: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 14, marginBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 },
   upgradeTitle: { color: COLORS.cream, fontSize: 10, fontWeight: "900", letterSpacing: .4 },
-  upgradeCopy: { color: COLORS.muted, fontSize: 8, marginTop: 5 },
+  upgradeCopy: { color: COLORS.muted, fontSize: 12, marginTop: 5 },
   tabBar: { height: 67, flexDirection: "row", backgroundColor: COLORS.deep, borderTopWidth: 1, borderColor: COLORS.line, paddingBottom: Platform.OS === "android" ? 6 : 0 },
   tab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 3, borderTopWidth: 2, borderTopColor: "transparent" },
   tabActive: { borderTopColor: COLORS.lime, backgroundColor: "#0c1915" },

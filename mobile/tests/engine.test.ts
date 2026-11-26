@@ -188,6 +188,47 @@ test("same-port round trip cannot mint credits", () => {
   assert.ok(sold.player.credits < state.player.credits);
 });
 
+test("bulk market movement cannot turn an expanded-hold same-port loop into profit", () => {
+  const state = { ...game(), player: { credits: 900, cargoCapacity: 16, cargo: {}, hull: 3, maxHull: 3 } };
+  const port = state.ports[0];
+  const { ask, commodityId, stock } = port.market[0];
+  const quantity = Math.min(stock, 16, Math.floor(state.player.credits / ask));
+  const order = { portId: port.id, commodityId, quantity };
+  const bought = trade(state, { ...order, side: "buy" });
+  const sold = trade(bought, { ...order, side: "sell" });
+  assert.ok(quantity > 8);
+  assert.ok(bought.ports[0].market[0].bid < sold.ports[0].market[0].ask);
+  assert.ok(sold.player.credits < state.player.credits);
+  assert.equal(sold.ports[0].market[0].stock, stock);
+});
+
+test("sales consume oldest lots and never invent a purchase cost for older cargo", () => {
+  const state = game();
+  const quote = state.ports[0].market[0];
+  const order = { portId: state.ports[0].id, commodityId: quote.commodityId };
+  state.player.cargo[quote.commodityId] = 1;
+  const first = trade(state, { ...order, quantity: 2, side: "buy" });
+  const next = trade(first, { ...order, quantity: 2, side: "buy" });
+  const withLegacy = trade(next, { ...order, quantity: 2, side: "sell" });
+  assert.equal(withLegacy.lastTrade?.costBasis, null);
+  const mixed = trade(withLegacy, { ...order, quantity: 2, side: "sell" });
+  assert.equal(mixed.lastTrade?.costBasis, quote.ask + next.lastTrade!.unitPrice);
+  assert.deepEqual(mixed.player.cargoLots?.[quote.commodityId], [{ quantity: 1, unitCost: next.lastTrade!.unitPrice }]);
+});
+
+test("cargo lost in an encounter removes the matching purchase lots", () => {
+  const state = game();
+  const order = { portId: state.ports[0].id, commodityId: state.ports[0].market[0].commodityId };
+  const first = trade(state, { ...order, quantity: 1, side: "buy" });
+  const loaded = trade(first, { ...order, quantity: 2, side: "buy" });
+  const after = resolveEncounter({
+    ...loaded,
+    encounter: { type: "pirates", portId: order.portId, severity: 1 },
+  }, "run");
+  assert.equal(after.player.cargo[order.commodityId], 2);
+  assert.deepEqual(after.player.cargoLots?.[order.commodityId], [{ quantity: 2, unitCost: loaded.lastTrade!.unitPrice }]);
+});
+
 test("trade rejects remote markets, hold overflow, and missing inventory", () => {
   const state = game();
   const local = state.ports[0];

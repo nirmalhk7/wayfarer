@@ -17,6 +17,7 @@ function memoryStorage(): StringStorage & { writes: string[] } {
       writes.push(next);
       value = next;
     },
+    removeItem: async () => { value = null; },
   };
 }
 
@@ -79,6 +80,19 @@ test("samples are ignored safely until a selected target has been persisted", as
 
   assert.equal(state, null);
   assert.equal(storage.writes.length, 0);
+});
+
+test("a reset is ordered after in-flight samples and late samples cannot recreate the session", async () => {
+  const storage = memoryStorage();
+  const store = createDockingSessionStore(storage, () => 15_000);
+  await store.selectTarget(TARGET);
+  const prior = store.processSamples([sample(0), sample(15_000)]);
+  const clear = store.clear();
+  const late = store.processForegroundSamples([sample(15_000)]);
+  await Promise.all([prior, clear]);
+  assert.equal(await late, null);
+  assert.equal(await store.load(), null);
+  assert.equal(await storage.getItem("docking"), null);
 });
 
 test("permission revocation explicitly pauses a persisted qualifying session", async () => {

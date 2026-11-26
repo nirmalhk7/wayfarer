@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import type { DockingTarget } from "../docking.ts";
 import type { LocationSample } from "../location/types.ts";
+import { LIVE_RESET_MARKER, LIVE_STORAGE_KEY } from "../persistence.ts";
 import {
   acknowledgeDockingProof,
   applyCoordinatorSample,
@@ -17,6 +18,7 @@ const FOREGROUND_PERSIST_INTERVAL_MS = 15_000;
 export type StringStorage = {
   getItem(key: string): Promise<string | null>;
   setItem(key: string, value: string): Promise<void>;
+  removeItem(key: string): Promise<void>;
 };
 
 export function shouldPersistForegroundSession(
@@ -32,6 +34,7 @@ export function shouldPersistForegroundSession(
 export function createDockingSessionStore(
   storage: StringStorage,
   clock: () => number = Date.now,
+  liveResetPending?: () => Promise<boolean>,
 ) {
   let queue: Promise<unknown> = Promise.resolve();
   let cached: DockingCoordinator | null | undefined;
@@ -44,6 +47,7 @@ export function createDockingSessionStore(
   }
 
   async function read(): Promise<DockingCoordinator | null> {
+    if (liveResetPending && await liveResetPending()) return null;
     if (cached !== undefined) return cached;
     cached = decodeDockingCoordinator(await storage.getItem(DOCKING_SESSION_STORAGE_KEY));
     return cached;
@@ -61,6 +65,11 @@ export function createDockingSessionStore(
 
   return {
     load: () => serialized(read),
+    clear: () => serialized(async () => {
+      await storage.removeItem(DOCKING_SESSION_STORAGE_KEY);
+      cached = null;
+      lastForegroundPersistedAt = null;
+    }),
     save: (state: DockingCoordinator) => serialized(() => write(state)),
     selectTarget: (target: DockingTarget) => serialized(async () => {
       const current = await read();
@@ -105,7 +114,8 @@ export function createDockingSessionStore(
   };
 }
 
-const persistedStore = createDockingSessionStore(AsyncStorage);
+const persistedStore = createDockingSessionStore(AsyncStorage, Date.now, async () =>
+  await AsyncStorage.getItem(LIVE_STORAGE_KEY) === LIVE_RESET_MARKER);
 const listeners = new Set<(state: DockingCoordinator) => void>();
 
 function publish(state: DockingCoordinator | null): DockingCoordinator | null {
@@ -133,6 +143,10 @@ export async function pausePersistedDockingCoordinator(): Promise<DockingCoordin
 
 export async function loadPersistedDockingCoordinator(): Promise<DockingCoordinator | null> {
   return persistedStore.load();
+}
+
+export function clearPersistedDockingCoordinator(): Promise<void> {
+  return persistedStore.clear();
 }
 
 export async function persistDockingCoordinator(

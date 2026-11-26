@@ -4,17 +4,25 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   COMMODITIES,
+  DELIVERY,
+  UPGRADE_COSTS,
+  acceptDelivery,
   buyUpgrade,
+  canConfirmDock,
   canDock,
+  completeDelivery,
   createGame,
+  deliveryRoute,
   distanceMeters,
   dock,
   getRumors,
+  marketQuote,
   resolveEncounter,
   trade,
 } from "./engine.mjs";
 import {
   cargoTotals,
+  formatDistance,
   formatRumor,
   portStatusCopy,
 } from "./view-model.mjs";
@@ -31,6 +39,16 @@ interface Encounter {
   description?: string;
   message?: string;
 }
+interface TradeReceipt {
+  portId: string;
+  commodityId: string;
+  side: "buy" | "sell";
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  costBasis: number | null;
+  profit: number | null;
+}
 interface Player { credits: number; cargoCapacity: number; cargo: Record<string, number>; hull: number }
 interface GameState {
   origin: Position;
@@ -41,13 +59,15 @@ interface GameState {
   revealedMarkets: Record<string, boolean>;
   dockedPortId: string;
   encounter: Encounter | null;
+  destinationPortId?: string | null;
+  lastTrade?: TradeReceipt;
+  delivery?: { status: "active" | "delivered"; loaded: number };
   player: Player;
 }
 interface Rumor { commodityId: string; commodityName: string; price: "cheap" | "fair" | "expensive" }
 interface Upgrade { id: "cargo" | "hull"; name: string; detail: string }
 interface DisplayRumor { id: string; headline: string; detail: string; tone: string }
 type Outcome = GameState;
-type SaveStatus = "loading" | "fresh" | "restored";
 interface SavedGameEnvelope {
   version: 1;
   originPolicy: "persisted-origin";
@@ -55,11 +75,16 @@ interface SavedGameEnvelope {
 }
 
 const STORAGE_KEY = "wayfarer-save-v1";
+const TRAINING_STORAGE_KEY = "wayfarer-training-v1";
 const SAVE_VERSION = 1;
-const DEMO_ORIGIN: Position = { latitude: 39.7392, longitude: -104.9903 };
-const FALLBACK_UPGRADES: Upgrade[] = [
-  { id: "cargo", name: "Expanded cargo bay", detail: "+4 cargo capacity" },
-  { id: "hull", name: "Hull plating", detail: "+1 hull integrity" },
+const DEMO_ORIGIN: Position = { latitude: 0, longitude: 0 };
+const TRAINING_SEED = "wayfarer-training-v1";
+const MAX_FIX_AGE_MS = 5_000;
+const MARKET_ACCESS_MS = 60_000;
+const LOCATION_IDLE = "Location is checked only on request."
+const UPGRADES: Upgrade[] = [
+  { id: "cargo", name: "Expand cargo bay", detail: "Add 4 cargo slots" },
+  { id: "hull", name: "Install hull plating", detail: "Add 1 hull integrity" },
 ];
 
 function isGameState(value: unknown): value is GameState {
@@ -72,9 +97,9 @@ function createEngineGame(position: Position): GameState {
   return createGame(position) as GameState;
 }
 
-function readSavedGame(): GameState | null {
+function readSavedGame(key: string): GameState | null {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
+    const stored = window.localStorage.getItem(key);
     const parsed: unknown = stored ? JSON.parse(stored) : null;
     if (
       typeof parsed === "object"
@@ -91,7 +116,19 @@ function readSavedGame(): GameState | null {
   return null;
 }
 
-function metersBetween(position: Position, port: Port) {
+function writeSavedGame(key: string, game: GameState) {
+  try {
+    const save: SavedGameEnvelope = { version: SAVE_VERSION, originPolicy: "persisted-origin", game };
+    window.localStorage.setItem(key, JSON.stringify(save));
+    return true;
+  } catch {
+    // A full or unavailable browser store should not interrupt play.
+    return false;
+  }
+}
+
+function metersBetween(position: Position | null, port: Port) {
+  if (!position) return Number.POSITIVE_INFINITY;
   try {
     const value = distanceMeters(position, port.position);
     return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
@@ -100,35 +137,111 @@ function metersBetween(position: Position, port: Port) {
   }
 }
 
-function marketPrice(port: Port, commodityId: string) {
-  return port.market?.find((entry) => entry.commodityId === commodityId)?.price;
+function positionFromFix({ coords }: GeolocationPosition): Position {
+  return { latitude: coords.latitude, longitude: coords.longitude, accuracy: coords.accuracy };
 }
 
-function cargoAmount(game: GameState, commodityId: string) {
-  return game.player.cargo[commodityId] ?? 0;
+function isFreshFix({ timestamp }: GeolocationPosition) {
+  const age = Date.now() - timestamp;
+  return age >= 0 && age <= MAX_FIX_AGE_MS;
+}
+
+function MarketOrders({ game, portId, docked, busy, onOrder }: {
+  game: GameState;
+  portId: string;
+  docked: boolean;
+  busy: boolean;
+  onOrder: (commodityId: string, side: "buy" | "sell", quantity: number) => void;
+}) {
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  if (!docked) return <p className="wf-locked">Dock to see exact commodity prices and trade.</p>;
+
+  return (
+    <ul className="wf-market-table" aria-label="Commodity market">
+      {(COMMODITIES as Commodity[]).map((commodity) => {
+        const quote = marketQuote(game, portId, commodity.id);
+        const value = quantities[commodity.id] ?? "1";
+        const quantity = Number(value);
+        const valid = Number.isSafeInteger(quantity) && quantity > 0;
+        return (
+          <li className="wf-market-row" key={commodity.id}>
+            <strong>{commodity.name}</strong>
+            <span>Buy {quote.ask} cr · Sell {quote.bid} cr per unit</span>
+            <span>Stock {quote.stock} · In hold {game.player.cargo[commodity.id] ?? 0} · Can buy {quote.maxBuy}</span>
+            <div className="wf-trade-controls">
+              <label className="wf-quantity">
+                Units
+                <input
+                  aria-label={`${commodity.name} units`}
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={value}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setQuantities((current) => ({ ...current, [commodity.id]: next }));
+                  }}
+                  disabled={busy}
+                />
+              </label>
+              <button aria-label={`Buy ${commodity.name}`} className="wf-icon-button" type="button"
+                onClick={() => onOrder(commodity.id, "buy", quantity)}
+                disabled={busy || !valid || quantity > quote.maxBuy}>
+                Buy{valid && quantity <= quote.maxBuy ? ` · ${quote.ask * quantity} cr` : ""}
+              </button>
+              <button aria-label={`Sell ${commodity.name}`} className="wf-icon-button" type="button"
+                onClick={() => onOrder(commodity.id, "sell", quantity)}
+                disabled={busy || !valid || quantity > quote.maxSell}>
+                Sell{valid && quantity <= quote.maxSell ? ` · ${quote.bid * quantity} cr` : ""}
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 export default function GameShell() {
-  const [game, setGame] = useState<GameState>(() => createEngineGame(DEMO_ORIGIN));
-  const [position, setPosition] = useState<Position>(DEMO_ORIGIN);
-  const [selectedPortId, setSelectedPortId] = useState<string>(() => game.ports[0]?.id ?? "");
+  const [liveGame, setLiveGame] = useState<GameState>(() => createEngineGame(DEMO_ORIGIN));
+  const [trainingGame, setTrainingGame] = useState<GameState>(() =>
+    createGame({ ...DEMO_ORIGIN, seed: TRAINING_SEED }) as GameState,
+  );
+  const [liveFix, setLiveFix] = useState<GeolocationPosition | null>(null);
+  const [trainingPosition, setTrainingPosition] = useState<Position>(DEMO_ORIGIN);
+  const [selectedPortId, setSelectedPortId] = useState(liveGame.originPortId);
   const [training, setTraining] = useState(false);
-  const [locationMode, setLocationMode] = useState("Connecting to navigation…");
-  const [notice, setNotice] = useState("Welcome, captain. Select a port to plot a course.");
-  const [activeEncounter, setActiveEncounter] = useState<Encounter | null>(() => game.encounter);
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
-  const [originReady, setOriginReady] = useState(false);
-  const saveStatusRef = useRef<SaveStatus>("loading");
-  const pendingLivePositionRef = useRef<Position | null>(null);
-  const centeredOnLivePositionRef = useRef(false);
 
+  const [notice, setNotice] = useState("Welcome, captain. Select a port to plot a course.");
+  const [checkingLocation, setCheckingLocation] = useState(false);
+  const checkingLocationRef = useRef(false);
+  const [loaded, setLoaded] = useState(false);
+  const [originReady, setOriginReady] = useState(false);
+  const resetDialog = useRef<HTMLDialogElement>(null);
+  const emptyTrainingSave = useRef<GameState | null>(null);
+  const [marketRevision, setMarketRevision] = useState(0);
+  const campaignName = training ? "Training" : "Live";
+
+  const game = training ? trainingGame : liveGame;
+  const setGame = training ? setTrainingGame : setLiveGame;
+  const activeEncounter = game.encounter;
+  const position = training ? trainingPosition : liveFix && positionFromFix(liveFix);
   const ports = game.ports;
   const commodities = COMMODITIES as Commodity[];
   const selectedPort = ports.find((port) => port.id === selectedPortId) ?? ports[0];
   const distance = selectedPort ? metersBetween(position, selectedPort) : Number.POSITIVE_INFINITY;
-  const dockable = selectedPort ? Boolean(canDock(game, selectedPort.id, position)) : false;
-  const dockedPortId = game.dockedPortId;
-  const docked = Boolean(selectedPort && dockedPortId === selectedPort.id);
+  const isInRange = (portId: string) => Boolean(position && (
+    training ? canDock(game, portId, position) : canConfirmDock(game, portId, position)
+  ));
+  const dockable = isInRange(selectedPort.id);
+  const docked = dockable && selectedPort.id === game.dockedPortId;
+  const destination = ports.find((port) => port.id === game.destinationPortId);
+  const routeArrived = Boolean(destination && destination.id === game.dockedPortId && isInRange(destination.id));
+  const receipt = game.lastTrade;
+  const receiptPort = ports.find((port) => port.id === receipt?.portId);
+  const receiptCommodity = commodities.find((commodity) => commodity.id === receipt?.commodityId);
+  const contractRoute = deliveryRoute(game) as { origin: Port; destination: Port } | null;
+  const busy = !loaded || checkingLocation;
   const totals = cargoTotals(game.player?.cargo);
   const credits = game.player?.credits ?? 0;
   const capacity = game.player?.cargoCapacity ?? 0;
@@ -136,28 +249,18 @@ export default function GameShell() {
   const hullMax = 5;
 
   useEffect(() => {
-    const restoredGame = readSavedGame();
+    const restoredGame = readSavedGame(STORAGE_KEY);
+    const restoredTraining = readSavedGame(TRAINING_STORAGE_KEY);
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
+      if (restoredTraining) setTrainingGame(restoredTraining);
       if (restoredGame) {
-        saveStatusRef.current = "restored";
-        setGame(restoredGame);
-        setSelectedPortId(restoredGame.dockedPortId || restoredGame.ports[0]?.id || "");
-        setActiveEncounter(restoredGame.encounter);
-        setSaveStatus("restored");
-        setOriginReady(true);
-        return;
-      }
-
-      const livePosition = pendingLivePositionRef.current;
-      saveStatusRef.current = "fresh";
-      if (livePosition) {
-        centeredOnLivePositionRef.current = true;
-        setGame(createEngineGame(livePosition));
+        setLiveGame(restoredGame);
+        setSelectedPortId(restoredGame.dockedPortId || restoredGame.originPortId);
         setOriginReady(true);
       }
-      setSaveStatus("fresh");
+      setLoaded(true);
     });
     return () => {
       cancelled = true;
@@ -165,97 +268,171 @@ export default function GameShell() {
   }, []);
 
   useEffect(() => {
-    if (saveStatus === "loading" || !originReady) return;
-    try {
-      const save: SavedGameEnvelope = {
-        version: SAVE_VERSION,
-        originPolicy: "persisted-origin",
-        game,
-      };
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(save));
-    } catch {
-      // A full or unavailable browser store should not interrupt flight.
-    }
-  }, [game, originReady, saveStatus]);
+    if (loaded && originReady) writeSavedGame(STORAGE_KEY, liveGame);
+  }, [liveGame, loaded, originReady]);
 
   useEffect(() => {
-    if (!navigator.geolocation) {
-      let cancelled = false;
-      queueMicrotask(() => {
-        if (!cancelled) {
-          setLocationMode("Navigation unavailable — demo origin engaged.");
-          setOriginReady(true);
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
+    if (loaded && training && trainingGame !== emptyTrainingSave.current) {
+      writeSavedGame(TRAINING_STORAGE_KEY, trainingGame);
     }
+  }, [loaded, training, trainingGame]);
 
-    const watchId = navigator.geolocation.watchPosition(
-      (location) => {
-        const livePosition = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          accuracy: location.coords.accuracy,
-        };
-        pendingLivePositionRef.current = livePosition;
-        if (!training) {
-          setPosition(livePosition);
-          if (
-            saveStatusRef.current === "fresh"
-            && !centeredOnLivePositionRef.current
-          ) {
-            centeredOnLivePositionRef.current = true;
-            setGame(createEngineGame(livePosition));
-            setSelectedPortId("port-1");
-            setOriginReady(true);
-          }
-        }
-        setLocationMode(`Live navigator · ±${Math.round(location.coords.accuracy)} m`);
-      },
-      () => {
-        setLocationMode("Location permission denied — demo origin engaged.");
-        setOriginReady(true);
-      },
-      { enableHighAccuracy: true, maximumAge: 15_000, timeout: 10_000 },
-    );
-    return () => navigator.geolocation.clearWatch(watchId);
-  }, [training]);
+  useEffect(() => {
+    if (!liveFix) return;
+    const timer = window.setTimeout(() => setLiveFix(null), MARKET_ACCESS_MS);
+    return () => window.clearTimeout(timer);
+  }, [liveFix]);
 
-  const applyOutcome = (outcome: Outcome, fallback: string) => {
-    setGame(outcome);
-    setNotice(fallback);
-    if (outcome.encounter) setActiveEncounter(outcome.encounter);
+  const toggleTraining = (enabled: boolean) => {
+    if (checkingLocationRef.current) return;
+    const next = enabled ? trainingGame : liveGame;
+    const port = next.ports.find(({ id }) => id === next.dockedPortId);
+    if (enabled) setTrainingPosition(port?.position ?? next.origin);
+    setSelectedPortId(port?.id ?? next.originPortId);
+    setNotice(enabled ? "Training is active. Practice with a separate ship and balance." : "Live campaign selected.");
+    setLiveFix(null);
+    setTraining(enabled);
   };
 
-  const runAction = (action: () => Outcome, fallback: string) => {
+  const runAction = (action: () => Outcome, message: string) => {
     try {
-      applyOutcome(action(), fallback);
+      setGame(action());
+      setNotice(message);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Command rejected by station control.");
     }
   };
 
-  const requestDock = () => {
-    if (!selectedPort) return;
-    runAction(
-      () => dock(game, selectedPort.id, position, { demo: training }) as GameState,
-      `Docked at ${selectedPort.name}.`,
+  const runContract = (action: (current: GameState) => Outcome, message: string) => {
+    if (!docked || busy || checkingLocationRef.current || activeEncounter) return;
+    try {
+      const key = training ? TRAINING_STORAGE_KEY : STORAGE_KEY;
+      const stored = readSavedGame(key);
+      if (stored && JSON.stringify(stored.delivery) !== JSON.stringify(game.delivery)) {
+        throw new Error("The saved contract has changed. Reload before continuing.");
+      }
+      const next = action(game);
+      if (!writeSavedGame(key, next)) throw new Error("Contract could not be saved. Try again.");
+      setGame(next);
+      setNotice(message);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Contract could not be saved.");
+    }
+  };
+
+  const resetCampaign = () => {
+    if (busy || checkingLocationRef.current) return;
+    try {
+      window.localStorage.removeItem(training ? TRAINING_STORAGE_KEY : STORAGE_KEY);
+    } catch {
+      resetDialog.current?.close();
+      setNotice(`Could not remove the ${campaignName} save from this browser. Try again.`);
+      return;
+    }
+    if (training) {
+      const fresh = createGame({ ...DEMO_ORIGIN, seed: TRAINING_SEED }) as GameState;
+      emptyTrainingSave.current = fresh;
+      setTrainingGame(fresh);
+      setTrainingPosition(fresh.origin);
+      setSelectedPortId(fresh.originPortId);
+    } else {
+      const fresh = createEngineGame(DEMO_ORIGIN);
+      setLiveGame(fresh);
+      setLiveFix(null);
+      setOriginReady(false);
+      setSelectedPortId(fresh.originPortId);
+    }
+    setMarketRevision((revision) => revision + 1);
+    resetDialog.current?.close();
+    setNotice(`${campaignName} game data reset.`);
+  };
+
+  const checkLiveLocation = (action: (fix: Position) => void) => {
+    if (busy || checkingLocationRef.current) return;
+    if (!navigator.geolocation) {
+      setNotice("Location is unavailable. You can still play in Training.");
+      return;
+    }
+
+    checkingLocationRef.current = true;
+    setCheckingLocation(true);
+    setNotice("Checking your location…");
+    const finish = () => {
+      checkingLocationRef.current = false;
+      setCheckingLocation(false);
+    };
+    navigator.geolocation.getCurrentPosition(
+      (location) => {
+        const fix = positionFromFix(location);
+        if (!isFreshFix(location) || !Number.isFinite(location.coords.accuracy) || location.coords.accuracy < 0
+          || !Number.isFinite(fix.latitude) || !Number.isFinite(fix.longitude)
+          || Math.abs(fix.latitude) > 90 || Math.abs(fix.longitude) > 180) {
+          setLiveFix(null);
+          setNotice("The location reading could not be used. Try again while safely stopped.");
+        } else {
+          setLiveFix(location);
+          action(fix);
+        }
+        finish();
+      },
+      (error) => {
+        setLiveFix(null);
+        setNotice(error.code === 1
+          ? "Location permission was denied. You can still play in Training."
+          : "Location could not be confirmed. Try again while safely stopped.");
+        finish();
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10_000 },
     );
   };
 
-  const tradeOne = (commodityId: string, direction: "buy" | "sell") => {
-    if (!selectedPort || !docked) return;
-    runAction(
-      () => trade(game, { portId: selectedPort.id, commodityId, side: direction, quantity: 1 }) as GameState,
-      `${direction === "buy" ? "Purchased" : "Sold"} one unit.`,
+  const confirmPort = (portId: string, fix: Position, map = game) => {
+    if (canConfirmDock(map, portId, fix)) return true;
+    setNotice("Docking range could not be confirmed. Try again while safely stopped within range.");
+    return false;
+  };
+
+  const requestDock = () => {
+    if (busy || activeEncounter) return;
+    const dockAt = (fix: Position) => runAction(
+      () => dock(game, selectedPort.id, fix) as GameState,
+      `Docked at ${selectedPort.name}.`,
     );
+    if (training) {
+      if (dockable && !docked) dockAt(trainingPosition);
+      return;
+    }
+
+    checkLiveLocation((fix) => {
+      if (originReady) {
+        if (confirmPort(selectedPort.id, fix)) dockAt(fix);
+        return;
+      }
+
+      const firstGame = createEngineGame(fix);
+      if (!confirmPort(firstGame.originPortId, fix, firstGame)) return;
+      setLiveGame(firstGame);
+      setOriginReady(true);
+      setSelectedPortId(firstGame.originPortId);
+      setNotice(`Docked at ${firstGame.ports[0].name}.`);
+    });
+  };
+
+  const placeOrder = (commodityId: string, side: "buy" | "sell", quantity: number) => {
+    if (!docked || busy || activeEncounter) return;
+    const settle = () => runAction(
+      () => trade(game, { portId: selectedPort.id, commodityId, side, quantity }) as GameState,
+      side === "buy" ? "Cargo loaded. Choose a destination on the star chart." : "Sale complete. Your receipt is in the Port Market.",
+    );
+
+    if (training) settle();
+    else checkLiveLocation((fix) => {
+      if (confirmPort(selectedPort.id, fix)) settle();
+    });
   };
 
   const resolve = (choice: "run" | "pay" | "fight" | "help") => {
     runAction(() => resolveEncounter(game, choice) as GameState, "Encounter resolved.");
-    setActiveEncounter(null);
   };
 
   const rumors: DisplayRumor[] = (() => {
@@ -277,7 +454,7 @@ export default function GameShell() {
         </div>
         <div className="wf-location" role="status">
           <span className="wf-signal" aria-hidden="true" />
-          {locationMode}
+          {training ? "Training navigator" : liveFix ? `Last location check · ±${Math.round(liveFix.coords.accuracy)} m` : LOCATION_IDLE}
         </div>
       </header>
 
@@ -304,6 +481,8 @@ export default function GameShell() {
 
         <section className="wf-panel wf-chart" aria-labelledby="wf-chart-title">
           <div className="wf-panel-heading"><p className="wf-kicker">Navigator</p><h2 id="wf-chart-title">Local Star Chart</h2></div>
+          <p className="wf-port-flavor"><strong>Public pilot preset unavailable.</strong> Desk check complete. Field validation pending.</p>
+          <p className="wf-port-flavor">The chart shows generated test points. Use Training for route tests. Do not travel to these points.</p>
           <div className="wf-radar" aria-label="Constellation plot of nearby trade ports">
             <span className="wf-radar-ring wf-radar-ring--one" aria-hidden="true" />
             <span className="wf-radar-ring wf-radar-ring--two" aria-hidden="true" />
@@ -316,6 +495,7 @@ export default function GameShell() {
                 key={port.id}
                 onClick={() => setSelectedPortId(port.id)}
                 type="button"
+                disabled={busy}
                 aria-pressed={selectedPort?.id === port.id}
                 aria-label={`Select ${port.name}`}
               >
@@ -323,45 +503,136 @@ export default function GameShell() {
               </button>
             ))}
           </div>
-          <div className="wf-chart-footer"><span>GPS: {position.latitude.toFixed(4)}, {position.longitude.toFixed(4)}</span><span>Range measured in real space</span></div>
+          <details className="wf-port-list">
+            <summary>Port list and discoveries ({game.discoveredPortIds.length} / {ports.length})</summary>
+            <ul>
+              {ports.map((port) => (
+                <li key={port.id}>
+                  <button className="wf-icon-button" type="button" disabled={busy}
+                    aria-pressed={selectedPort.id === port.id} onClick={() => setSelectedPortId(port.id)}>
+                    {port.name}
+                  </button>
+                  <span>{game.discoveredPortIds.includes(port.id) ? "Visited" : "Unvisited"} · {formatDistance(metersBetween(position, port))}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
         </section>
 
         <section className="wf-panel wf-port-detail" aria-labelledby="wf-port-title">
           <div className="wf-panel-heading"><p className="wf-kicker">Selected destination</p><h2 id="wf-port-title">{selectedPort?.name ?? "No port selected"}</h2></div>
-          <p className="wf-port-flavor">{selectedPort?.flavor ?? "A registered independent trading port."}</p>
-          <p className="wf-range">{selectedPort ? portStatusCopy({ portName: selectedPort.name, distanceMeters: distance, dockable, docked }) : "Select a destination."}</p>
+          <p className="wf-port-flavor">{selectedPort.flavor ?? "Generated test port. Use Training to simulate arrival."}</p>
+          <p className="wf-range">{training
+            ? portStatusCopy({ portName: selectedPort.name, distanceMeters: distance, dockable, docked })
+            : docked ? "Market open after your recent check-in. Each trade checks your location again."
+              : position ? `Range at last check · ${formatDistance(distance)}`
+                : "Check in when safely stopped to use the live market."}</p>
+          {destination && (
+            <p className="wf-route">Route to {destination.name} · {routeArrived ? "Arrived" : `${totals.units} units aboard`}</p>
+          )}
           <div className="wf-port-actions">
-            <button className="wf-button wf-button--primary" onClick={requestDock} type="button" disabled={!dockable || docked}> {docked ? "Docked" : "Request docking"} </button>
-            <label className="wf-training-toggle"><input checked={training} onChange={(event) => setTraining(event.target.checked)} type="checkbox" /> Training Simulator</label>
-            {training && <button className="wf-button wf-button--subtle" onClick={() => { if (selectedPort) { setPosition(selectedPort.position); setNotice(`Simulator moved you to ${selectedPort.name}.`); } }} type="button">Virtually arrive</button>}
+            <button className="wf-button wf-button--primary" onClick={requestDock} type="button"
+              disabled={busy || Boolean(activeEncounter) || (training && (!dockable || docked))}>
+              {training && docked ? "Docked" : !training && !originReady ? "Start live check-in"
+                : !training && docked ? "Refresh check-in" : "Request docking"}
+            </button>
+            <button className="wf-button wf-button--subtle" type="button"
+              disabled={busy || (!training && !originReady) || docked || destination?.id === selectedPort.id}
+              onClick={() => setGame({ ...game, destinationPortId: selectedPort.id })}>
+              {destination?.id === selectedPort.id ? "Destination selected" : "Set destination"}
+            </button>
+            <label className="wf-training-toggle">
+              <input checked={training} disabled={busy} onChange={(event) => toggleTraining(event.target.checked)} type="checkbox" />
+              Training Simulator
+            </label>
+            {training && <button className="wf-button wf-button--subtle" onClick={() => {
+              setTrainingPosition(selectedPort.position);
+              setNotice(`Simulator moved you to ${selectedPort.name}.`);
+            }} type="button">Virtually arrive</button>}
           </div>
         </section>
 
         <section className="wf-panel wf-market" aria-labelledby="wf-market-title">
-          <div className="wf-panel-heading"><p className="wf-kicker">{docked ? "Authenticated exchange" : "Encrypted until docked"}</p><h2 id="wf-market-title">Port Market</h2></div>
-          {docked ? <div className="wf-market-table" role="table" aria-label="Commodity market">
-            {commodities.map((commodity) => {
-              const price = selectedPort ? marketPrice(selectedPort, commodity.id) : undefined;
-              const amount = cargoAmount(game, commodity.id);
-              return <div className="wf-market-row" role="row" key={commodity.id}>
-                <span role="cell">{commodity.name}</span><strong role="cell">{Number.isFinite(price) ? `${price} cr` : "Quote pending"}</strong><span role="cell">Hold: {amount}</span>
-                <span className="wf-trade-controls" role="cell"><button aria-label={`Buy ${commodity.name}`} className="wf-icon-button" onClick={() => tradeOne(commodity.id, "buy")} type="button">Buy</button><button aria-label={`Sell ${commodity.name}`} className="wf-icon-button" disabled={!amount} onClick={() => tradeOne(commodity.id, "sell")} type="button">Sell</button></span>
-              </div>;
-            })}
-          </div> : <p className="wf-locked">Dock to decrypt exact commodity prices and trading controls.</p>}
+          <div className="wf-panel-heading"><p className="wf-kicker">{docked ? "Open for trading" : "Dock to unlock"}</p><h2 id="wf-market-title">Port Market</h2></div>
+          {contractRoute && <section aria-label="Cargo contract" className="wf-receipt">
+            <h3>{DELIVERY.title}</h3>
+            <p>{contractRoute.origin.name} → {contractRoute.destination.name} · {DELIVERY.quantity} Ion Fuel · Reward {DELIVERY.reward} cr</p>
+            {!game.delivery && <>
+              <p>Dock at {contractRoute.origin.name} to accept.</p>
+              <button className="wf-button wf-button--subtle" type="button"
+                disabled={busy || Boolean(activeEncounter) || !docked || selectedPort.id !== contractRoute.origin.id}
+                onClick={() => runContract(acceptDelivery, "Contract accepted. Buy Ion Fuel at Wayfarer Freeport.")}>Accept cargo contract</button>
+            </>}
+            {game.delivery?.status === "active" && <>
+              <p aria-live="polite">{game.delivery.loaded} / {DELIVERY.quantity} Ion Fuel reserved</p>
+              <p>{game.delivery.loaded < DELIVERY.quantity
+                ? `Buy Ion Fuel at ${contractRoute.origin.name}. Your contract fuel is reserved from sale.`
+                : `Select ${contractRoute.destination.name} on the chart or port list and dock there to deliver.`}</p>
+              <button className="wf-button wf-button--subtle" type="button"
+                disabled={busy || Boolean(activeEncounter) || !docked || selectedPort.id !== contractRoute.destination.id
+                  || game.delivery.loaded < DELIVERY.quantity}
+                onClick={() => runContract(completeDelivery, `Delivery complete. Received ${DELIVERY.reward} cr.`)}>Deliver reserved cargo</button>
+            </>}
+            {game.delivery?.status === "delivered" && <p>Delivered · {DELIVERY.reward} cr paid</p>}
+          </section>}
+          <MarketOrders key={`${training}-${selectedPort.id}-${marketRevision}`} game={game} portId={selectedPort.id}
+            docked={docked} busy={busy || Boolean(activeEncounter)} onOrder={placeOrder} />
+          {receipt && (
+            <section className="wf-receipt" aria-label="Last trade receipt" aria-live="polite">
+              <h3>Last trade receipt</h3>
+              <p>{receipt.side === "buy" ? "Bought" : "Sold"} {receipt.quantity} × {receiptCommodity?.name}
+                {" at "}{receiptPort?.name} · {receipt.unitPrice} cr per unit</p>
+              <p>{receipt.side === "buy" ? "Paid" : "Proceeds"} {receipt.total} cr</p>
+              {receipt.side === "sell" && <p>{receipt.costBasis === null
+                ? "Purchase cost unavailable for some cargo from an older save."
+                : `Purchase cost ${receipt.costBasis} cr · ${(receipt.profit ?? 0) < 0 ? "Loss" : "Profit"} ${Math.abs(receipt.profit ?? 0)} cr`}</p>}
+              {(receipt.profit ?? 0) > 0 && <a href="#wf-upgrades-title">See ship upgrades</a>}
+            </section>
+          )}
         </section>
 
         <section className="wf-panel wf-manifest" aria-labelledby="wf-manifest-title">
           <div className="wf-panel-heading"><p className="wf-kicker">Ship systems</p><h2 id="wf-manifest-title">Ship Manifest</h2></div>
           <dl className="wf-manifest-grid"><div><dt>Available credits</dt><dd>{Number(credits).toLocaleString()} cr</dd></div><div><dt>Free cargo space</dt><dd>{Math.max(0, Number(capacity || 0) - totals.units)} units</dd></div><div><dt>Hull integrity</dt><dd>{hull} / {hullMax}</dd></div></dl>
-          <h3>Upgrades</h3>
-          <div className="wf-upgrades">{FALLBACK_UPGRADES.map((upgrade) => <button className="wf-upgrade" key={upgrade.id} onClick={() => runAction(() => buyUpgrade(game, upgrade.id) as GameState, `${upgrade.name} installed.`)} type="button"><strong>{upgrade.name}</strong><span>{upgrade.detail}</span></button>)}</div>
+          <h3 id="wf-upgrades-title" tabIndex={-1}>Upgrades</h3>
+          <div className="wf-upgrades">{UPGRADES.map((upgrade) => {
+            const cost = UPGRADE_COSTS[upgrade.id];
+            const shortfall = cost - credits;
+            const effect = upgrade.id === "cargo" ? "Cargo capacity increased by 4." : "Hull integrity increased by 1.";
+            return (
+              <button className="wf-upgrade" key={upgrade.id} type="button"
+                disabled={busy || (!training && !originReady) || Boolean(activeEncounter) || shortfall > 0}
+                onClick={() => runAction(() => buyUpgrade(game, upgrade.id) as GameState, `${effect} Paid ${cost} cr.`)}>
+                <strong>{upgrade.name}</strong>
+                <span>{upgrade.detail} · {cost} cr</span>
+                {shortfall > 0 && <span>{shortfall} cr short</span>}
+              </button>
+            );
+          })}</div>
+          <section className="wf-data" aria-labelledby="wf-data-title">
+            <h3 id="wf-data-title">Local game data</h3>
+            <p>This browser stores separate Live and Training saves with your ship, cargo, markets, visits, contract and last receipt.
+              Live saves include your starting coordinates and generated port coordinates. Training uses a simulated map.
+              Recent location checks stay in memory.</p>
+            <button className="wf-button wf-button--subtle" type="button" disabled={busy || Boolean(activeEncounter)}
+              onClick={() => resetDialog.current?.showModal()}>Reset {campaignName} game data</button>
+          </section>
         </section>
       </div>
 
+      <dialog ref={resetDialog} className="wf-reset-dialog" aria-labelledby="wf-reset-title" aria-describedby="wf-reset-description">
+        <h2 id="wf-reset-title">Reset {campaignName} game data?</h2>
+        <p id="wf-reset-description">This permanently removes your {campaignName} progress and its saved coordinates from this browser.
+          Your {training ? "Live" : "Training"} save is kept.</p>
+        <form method="dialog">
+          <button className="wf-button wf-button--subtle" type="submit">Cancel</button>
+          <button className="wf-button wf-button--primary" type="button" onClick={resetCampaign}>Confirm {campaignName} reset</button>
+        </form>
+      </dialog>
+
       {activeEncounter && <section className="wf-encounter" aria-labelledby="wf-encounter-title" role="dialog" aria-modal="true">
         <p className="wf-kicker">Incoming priority channel</p><h2 id="wf-encounter-title">{activeEncounter.title ?? activeEncounter.type ?? "Unidentified encounter"}</h2><p>{activeEncounter.description ?? activeEncounter.message ?? "A ship is hailing you for a decision."}</p>
-        <div className="wf-encounter-actions">{(activeEncounter.type === "distress" ? ["help", "run"] : ["run", "pay", "fight"]).map((choice) => <button className="wf-button wf-button--primary" key={choice} onClick={() => resolve(choice as "run" | "pay" | "fight" | "help")} type="button">{choice}</button>)}</div>
+        <div className="wf-encounter-actions">{(activeEncounter.type === "distress" ? ["help", "run"] : ["run", "pay", "fight"]).map((choice) => <button className="wf-button wf-button--primary" key={choice} disabled={busy} onClick={() => resolve(choice as "run" | "pay" | "fight" | "help")} type="button">{choice}</button>)}</div>
       </section>}
     </main>
   );

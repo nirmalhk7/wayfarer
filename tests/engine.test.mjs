@@ -3,17 +3,24 @@ import test from "node:test";
 
 import {
   COMMODITIES,
+  DELIVERY,
+  UPGRADE_COSTS,
+  acceptDelivery,
+  completeDelivery,
   buyUpgrade,
+  canConfirmDock,
   canDock,
   createGame,
+  deliveryRoute,
   distanceMeters,
   dock,
   getRumors,
+  marketQuote,
   resolveEncounter,
   trade,
 } from "../app/game/engine.mjs";
 
-const ORIGIN = { latitude: 39.7392, longitude: -104.9903 };
+const ORIGIN = { latitude: 0, longitude: 0 };
 
 function gameAtOrigin(seed = "test-seed") {
   return createGame({ ...ORIGIN, seed });
@@ -172,6 +179,43 @@ test("buying then selling at the same port cannot create free credits", () => {
   assert.ok(sold.player.credits <= game.player.credits);
 });
 
+test("bulk trades cannot push same-port bids above even the lowest local ask", () => {
+  const game = buyUpgrade(buyUpgrade(gameAtOrigin("wayfarer-training-v1"), "cargo"), "cargo");
+  const portId = game.originPortId;
+  const commodityId = "fuel";
+  const quantity = marketQuote(game, portId, commodityId).maxBuy;
+  assert.equal(quantity, 15);
+
+  const bought = trade(game, { portId, commodityId, quantity, side: "buy" });
+  const peak = marketQuote(bought, portId, commodityId);
+  const sold = trade(bought, { portId, commodityId, quantity, side: "sell" });
+  const trough = marketQuote(sold, portId, commodityId);
+
+  assert.equal(peak.ask, 28);
+  assert.equal(trough.ask, 24);
+  assert.ok(peak.bid < trough.ask);
+  assert.ok(sold.lastTrade.profit < 0);
+  assert.ok(sold.player.credits < game.player.credits);
+  assert.equal(trough.stock, marketQuote(game, portId, commodityId).stock);
+});
+
+test("the first trade in an older market anchors future movement to its saved quote", () => {
+  const game = gameAtOrigin();
+  const port = originPort(game);
+  const item = port.market[0];
+  delete item.referencePrice;
+  item.price = 20;
+  const order = { portId: port.id, commodityId: item.commodityId, quantity: 8 };
+
+  const bought = trade(game, { ...order, side: "buy" });
+  const sold = trade(bought, { ...order, side: "sell" });
+  const updated = originPort(sold).market[0];
+  assert.equal(bought.lastTrade.unitPrice, 20);
+  assert.equal(updated.referencePrice, 20);
+  assert.equal(updated.price, 18);
+  assert.equal(item.referencePrice, undefined);
+});
+
 test("upgrades cost credits and improve cargo or hull without mutating state", () => {
   const game = gameAtOrigin();
   const cargoUpgraded = buyUpgrade(game, "cargo");
@@ -181,6 +225,16 @@ test("upgrades cost credits and improve cargo or hull without mutating state", (
   assert.ok(cargoUpgraded.player.credits < game.player.credits);
   assert.ok(hullUpgraded.player.hull > cargoUpgraded.player.hull);
   assert.throws(() => buyUpgrade(game, "warp-drive"), /unknown upgrade/i);
+});
+
+test("an upgraded cargo bay can load a shipment the original hold could not", () => {
+  const game = gameAtOrigin();
+  const order = { portId: game.originPortId, commodityId: "fuel", side: "buy", quantity: 9 };
+  assert.throws(() => trade(game, order), /cargo capacity/i);
+  const upgraded = buyUpgrade(game, "cargo");
+  assert.equal(upgraded.player.credits, game.player.credits - UPGRADE_COSTS.cargo);
+  assert.equal(upgraded.player.cargoCapacity, 12);
+  assert.equal(trade(upgraded, order).player.cargo.fuel, 9);
 });
 
 test("encounter choices resolve partial outcomes and never erase all resources", () => {
@@ -201,4 +255,103 @@ test("encounter choices resolve partial outcomes and never erase all resources",
   assert.ok((resolved.player.cargo.fuel ?? 0) < 3);
   assert.equal(forced.player.cargo.fuel, 3);
   assert.throws(() => resolveEncounter(game, "run"), /no encounter/i);
+});
+
+test("only an accurate position fully inside the docking radius can confirm an arrival", () => {
+  const game = gameAtOrigin();
+  const port = originPort(game);
+  const offset = { latitude: 0, longitude: 0.001 };
+
+  assert.equal(canConfirmDock(game, port.id, { ...offset, accuracy: 8 }), true);
+  assert.equal(canConfirmDock(game, port.id, { ...offset, accuracy: 10 }), false);
+  assert.equal(canConfirmDock(game, port.id, { ...ORIGIN, accuracy: 121 }), false);
+  assert.equal(canConfirmDock(game, port.id, { ...ORIGIN, accuracy: -1 }), false);
+  assert.equal(canConfirmDock(game, port.id, ORIGIN), false);
+});
+
+test("the training route pays the quoted spread and records the sale after arrival", () => {
+  const game = gameAtOrigin("wayfarer-training-v1");
+  const order = { commodityId: "fuel", quantity: 3 };
+  const origin = originPort(game);
+  const destination = game.ports.find(({ name }) => name === "Cinder Exchange");
+  const opening = marketQuote(game, origin.id, order.commodityId);
+  assert.deepEqual(opening, { ask: 26, bid: 18, stock: origin.market[0].stock, maxBuy: 8, maxSell: 0 });
+
+  const bought = trade(game, { ...order, portId: origin.id, side: "buy" });
+  const sale = { ...order, portId: destination.id, side: "sell" };
+  assert.equal(bought.lastTrade.total, 78);
+  assert.throws(() => trade(bought, sale), /must be docked/i);
+  assert.throws(() => dock(bought, destination.id, origin.position), /too far/i);
+
+  const arrived = dock(bought, destination.id, destination.position);
+  const closed = trade(JSON.parse(JSON.stringify(arrived)), sale);
+  assert.equal(closed.player.credits, 912);
+  assert.equal(closed.player.cargo.fuel, undefined);
+  assert.deepEqual(closed.discoveredPortIds, [origin.id, destination.id]);
+  assert.deepEqual(closed.lastTrade, { ...sale, unitPrice: 30, total: 90, costBasis: 78, profit: 12 });
+});
+
+test("cost basis follows first-in first-out purchases of different prices", () => {
+  const game = gameAtOrigin();
+  const order = { portId: game.originPortId, commodityId: "fuel" };
+  const first = trade(game, { ...order, side: "buy", quantity: 2 });
+  const next = trade(first, { ...order, side: "buy", quantity: 3 });
+
+  const sold = trade(next, { ...order, side: "sell", quantity: 3 });
+  const cost = 2 * first.lastTrade.unitPrice + next.lastTrade.unitPrice;
+  assert.equal(sold.lastTrade.costBasis, cost);
+  assert.equal(sold.lastTrade.profit, sold.lastTrade.total - cost);
+  assert.deepEqual(sold.player.cargoLots.fuel, [{ quantity: 2, unitCost: next.lastTrade.unitPrice }]);
+  assert.equal(next.player.cargo.fuel, 5);
+});
+
+test("older cargo sells without invented profit and does not taint later known purchases", () => {
+  const game = gameAtOrigin();
+  game.player.cargo.fuel = 2;
+  const order = { portId: game.originPortId, commodityId: "fuel" };
+  const bought = trade(game, { ...order, side: "buy", quantity: 2 });
+  const sold = trade(bought, { ...order, side: "sell", quantity: 3 });
+  const last = trade(sold, { ...order, side: "sell", quantity: 1 });
+  assert.equal(sold.lastTrade.costBasis, null);
+  assert.equal(sold.lastTrade.profit, null);
+  assert.equal(last.lastTrade.costBasis, bought.lastTrade.unitPrice);
+});
+
+test("encounter losses remove the same units from the hold and the purchase ledger", () => {
+  const game = gameAtOrigin("wayfarer-training-v1");
+  const order = { portId: game.originPortId, commodityId: "fuel", side: "buy" };
+  const first = trade(game, { ...order, quantity: 1 });
+  const next = trade(first, { ...order, quantity: 2 });
+  const target = next.ports.find(({ name }) => name === "Lumen Reach");
+  const arrived = dock(next, target.id, target.position);
+  assert.ok(arrived.encounter);
+  const resolved = resolveEncounter(arrived, "run");
+  assert.equal(resolved.player.cargo.fuel, 2);
+  assert.deepEqual(resolved.player.cargoLots.fuel, [{ quantity: 2, unitCost: next.lastTrade.unitPrice }]);
+  assert.equal(dock(resolved, target.id, target.position).encounter, null);
+});
+
+test("a delivery reserves only new origin purchases and pays once across reload", () => {
+  const original = gameAtOrigin("wayfarer-training-v1");
+  const { origin, destination } = deliveryRoute(original);
+  const { commodityId, quantity, reward } = DELIVERY;
+  const order = { commodityId, quantity, side: "buy" };
+  const older = trade(original, { ...order, portId: origin.id });
+  const accepted = acceptDelivery(older);
+  assert.equal(accepted.delivery.loaded, 0);
+  const remote = dock(accepted, destination.id, destination.position);
+  const wrongPort = trade(remote, { ...order, portId: destination.id });
+  assert.equal(wrongPort.delivery.loaded, 0);
+  assert.throws(() => completeDelivery(wrongPort), /buy the contract fuel/i);
+
+  const loaded = trade(accepted, { ...order, portId: origin.id });
+  assert.equal(loaded.delivery.loaded, quantity);
+  assert.throws(() => trade(loaded, { ...order, quantity: quantity + 1, portId: origin.id, side: "sell" }), /reserved/i);
+  assert.throws(() => completeDelivery(loaded), /dock at the delivery/i);
+  const arrived = dock(loaded, destination.id, destination.position);
+  const completed = completeDelivery(JSON.parse(JSON.stringify(arrived)));
+  assert.equal(completed.player.credits, arrived.player.credits + reward);
+  assert.equal(completed.player.cargo[commodityId], quantity);
+  assert.throws(() => completeDelivery(JSON.parse(JSON.stringify(completed))), /no active delivery/i);
+  assert.throws(() => acceptDelivery(completed), /already been accepted/i);
 });

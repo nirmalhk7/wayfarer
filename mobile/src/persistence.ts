@@ -1,19 +1,25 @@
 import {
   COMMODITIES,
+  DELIVERY,
+  askBounds,
   createGame,
   isDockingProofId,
   MAX_DOCKING_PROOF_HISTORY,
+  type CargoLot,
+  type DeliveryState,
   type Coordinates,
   type Encounter,
   type GameState,
   type MarketQuote,
   type PlayerState,
   type Starport,
+  type TradeReceipt,
 } from "./game/engine.ts";
 
 export const LIVE_STORAGE_KEY = "wayfarer.mobile.live.save.v2";
 export const TRAINING_STORAGE_KEY = "wayfarer.mobile.training.save.v2";
 export const LEGACY_STORAGE_KEY = "wayfarer.mobile.save.v1";
+export const LIVE_RESET_MARKER = "wayfarer:live-reset";
 
 export type CampaignMode = "live" | "training";
 
@@ -59,7 +65,7 @@ function readCoordinates(value: unknown): Coordinates | null {
 
 function readMarketQuote(value: unknown): MarketQuote | null {
   if (!isRecord(value)) return null;
-  const { commodityId, stock, ask, bid } = value;
+  const { commodityId, stock, ask, bid, referenceAsk } = value;
   if (
     !isNonEmptyString(commodityId)
     || !COMMODITY_IDS.has(commodityId)
@@ -70,7 +76,11 @@ function readMarketQuote(value: unknown): MarketQuote | null {
   ) {
     return null;
   }
-  return { commodityId, stock, ask, bid };
+  const quote = { commodityId, stock, ask, bid };
+  if (referenceAsk === undefined) return quote;
+  if (!isPositiveInteger(referenceAsk)) return null;
+  const bounds = askBounds(referenceAsk);
+  return ask >= bounds.min && ask <= bounds.max ? { ...quote, referenceAsk } : null;
 }
 
 function readMarket(value: unknown): MarketQuote[] | null {
@@ -128,7 +138,51 @@ function readPlayer(value: unknown): PlayerState | null {
   }
   const cargo = readCargo(value.cargo, cargoCapacity);
   if (!cargo) return null;
-  return { credits, cargoCapacity, cargo, hull, maxHull };
+  const player = { credits, cargoCapacity, cargo, hull, maxHull };
+  if (value.cargoLots === undefined) return player;
+  if (!isRecord(value.cargoLots)) return null;
+
+  const cargoLots: Record<string, CargoLot[]> = {};
+  for (const [id, lots] of Object.entries(value.cargoLots)) {
+    if (!Object.hasOwn(cargo, id) || !Array.isArray(lots) || lots.length === 0) return null;
+    let quantity = 0;
+    let cost = 0;
+    const validated: CargoLot[] = [];
+    for (const lot of lots) {
+      if (!isRecord(lot) || !isPositiveInteger(lot.quantity)
+        || (lot.unitCost !== null && !isPositiveInteger(lot.unitCost))) return null;
+      quantity += lot.quantity;
+      cost += lot.quantity * (lot.unitCost ?? 0);
+      if (quantity > cargo[id] || !Number.isSafeInteger(cost)) return null;
+      validated.push({ quantity: lot.quantity, unitCost: lot.unitCost });
+    }
+    if (quantity !== cargo[id]) return null;
+    cargoLots[id] = validated;
+  }
+  return { ...player, cargoLots };
+}
+
+function readTradeReceipt(value: unknown, knownPortIds: ReadonlySet<string>): TradeReceipt | null {
+  if (!isRecord(value)) return null;
+  const { portId, commodityId, side, quantity, unitPrice, costBasis } = value;
+  if (typeof portId !== "string" || !knownPortIds.has(portId)
+    || typeof commodityId !== "string" || !COMMODITY_IDS.has(commodityId)
+    || (side !== "buy" && side !== "sell")
+    || !isPositiveInteger(quantity) || !isPositiveInteger(unitPrice)
+    || (costBasis !== null && !isPositiveInteger(costBasis))) return null;
+  const total = quantity * unitPrice;
+  if (!Number.isSafeInteger(total) || (side === "buy" && costBasis !== total)) return null;
+  return { portId, commodityId, side, quantity, unitPrice, costBasis };
+}
+
+function readDelivery(value: unknown, player: PlayerState): DeliveryState | null {
+  if (!isRecord(value) || !isNonNegativeInteger(value.loaded)) return null;
+  if (value.status === "delivered" && value.loaded === 0) return { status: "delivered", loaded: 0 };
+  if (value.status === "active"
+    && value.loaded <= Math.min(DELIVERY.quantity, player.cargo[DELIVERY.commodityId] ?? 0)) {
+    return { status: "active", loaded: value.loaded };
+  }
+  return null;
 }
 
 function readPortIds(value: unknown, knownPortIds: ReadonlySet<string>): string[] | null {
@@ -250,6 +304,10 @@ function readGameState(value: unknown): GameState | null {
     return null;
   }
   if (encounter && encounter.portId !== dockedPortId) return null;
+  const lastTrade = readTradeReceipt(value.lastTrade, portIds);
+  if (value.lastTrade !== undefined && (!lastTrade || !revealedMarketIds.includes(lastTrade.portId))) return null;
+  const delivery = readDelivery(value.delivery, player);
+  if (value.delivery !== undefined && !delivery) return null;
 
   return {
     version: 1,
@@ -262,6 +320,8 @@ function readGameState(value: unknown): GameState | null {
     consumedDockingProofIds,
     dockSequence,
     encounter,
+    ...(lastTrade ? { lastTrade } : {}),
+    ...(delivery ? { delivery } : {}),
     player,
   };
 }

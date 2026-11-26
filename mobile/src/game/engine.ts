@@ -3,7 +3,16 @@ import type { DockingProof } from "../docking.ts";
 export type Coordinates = { latitude: number; longitude: number };
 export type Commodity = { id: string; name: string; symbol: string; basePrice: number };
 export type PriceBand = "cheap" | "steady" | "expensive";
-export type MarketQuote = { commodityId: string; stock: number; ask: number; bid: number };
+export type MarketQuote = { commodityId: string; stock: number; ask: number; bid: number; referenceAsk?: number };
+export type CargoLot = { quantity: number; unitCost: number | null };
+export type TradeReceipt = {
+  portId: string;
+  commodityId: string;
+  side: "buy" | "sell";
+  quantity: number;
+  unitPrice: number;
+  costBasis: number | null;
+};
 export type Starport = {
   id: string;
   name: string;
@@ -20,9 +29,11 @@ export type PlayerState = {
   credits: number;
   cargoCapacity: number;
   cargo: Record<string, number>;
+  cargoLots?: Record<string, CargoLot[]>;
   hull: number;
   maxHull: number;
 };
+export type DeliveryState = { status: "active" | "delivered"; loaded: number };
 export type GameState = {
   version: 1;
   seed: string;
@@ -34,6 +45,8 @@ export type GameState = {
   consumedDockingProofIds: string[];
   dockSequence: number;
   encounter: Encounter | null;
+  lastTrade?: TradeReceipt;
+  delivery?: DeliveryState;
   player: PlayerState;
 };
 
@@ -53,7 +66,7 @@ const REMOTE_NAMES = [
   ["Kepler Market", "KPL-08"],
 ] as const;
 const EARTH_RADIUS_METERS = 6_371_000;
-const UPGRADE_COST = { cargo: 320, hull: 380 } as const;
+export const UPGRADE_COST = Object.freeze({ cargo: 320, hull: 380 });
 export const MAX_DOCKING_PROOF_ID_LENGTH = 96;
 export const MAX_DOCKING_PROOF_HISTORY = 4_096;
 
@@ -123,6 +136,84 @@ function requirePort(game: GameState, portId: string): Starport {
 
 function cargoUnits(cargo: Record<string, number>): number {
   return Object.values(cargo).reduce((sum, quantity) => sum + quantity, 0);
+}
+
+export function orderLimit(game: GameState, quote: MarketQuote, side: "buy" | "sell"): number {
+  const { player } = game;
+  return side === "sell"
+    ? (player.cargo[quote.commodityId] ?? 0) - (quote.commodityId === DELIVERY.commodityId ? contractCargo(game) : 0)
+    : Math.min(quote.stock, player.cargoCapacity - cargoUnits(player.cargo), Math.floor(player.credits / quote.ask));
+}
+
+export function askBounds(referenceAsk: number) {
+  return { min: Math.ceil(referenceAsk * .9), max: Math.floor(referenceAsk * 1.1) };
+}
+
+function cargoLots(player: PlayerState, id: string): CargoLot[] {
+  const lots = player.cargoLots?.[id] ?? [];
+  const unpriced = (player.cargo[id] ?? 0) - lots.reduce((sum, lot) => sum + lot.quantity, 0);
+  return unpriced > 0 ? [{ quantity: unpriced, unitCost: null }, ...lots] : lots;
+}
+
+function consumeLots(lots: CargoLot[], quantity: number) {
+  const remaining: CargoLot[] = [];
+  let costBasis: number | null = 0;
+  for (const lot of lots) {
+    const consumed = Math.min(quantity, lot.quantity);
+    if (consumed > 0 && costBasis !== null) {
+      costBasis = lot.unitCost === null ? null : costBasis + consumed * lot.unitCost;
+    }
+    if (consumed < lot.quantity) remaining.push({ ...lot, quantity: lot.quantity - consumed });
+    quantity -= consumed;
+  }
+  return { remaining, costBasis };
+}
+
+export const DELIVERY = Object.freeze({ title: "Cinder Reserve Run", commodityId: "ion_fuel", quantity: 2, reward: 150 });
+
+export function deliveryRoute(game: GameState) {
+  const origin = game.ports[0];
+  const destination = game.ports.find((port) => port.name === "Cinder Exchange");
+  return origin && destination ? { origin, destination } : null;
+}
+
+function contractCargo(game: GameState) {
+  return game.delivery?.status === "active" ? game.delivery.loaded : 0;
+}
+
+export function acceptDelivery(game: GameState): GameState {
+  const route = deliveryRoute(game);
+  if (game.delivery) throw new Error("This contract has already been accepted");
+  if (!route || game.dockedPortId !== route.origin.id || game.encounter) {
+    throw new Error("Dock at Wayfarer Freeport to accept this contract");
+  }
+  return { ...game, delivery: { status: "active", loaded: 0 } };
+}
+
+export function completeDelivery(game: GameState): GameState {
+  if (game.delivery?.status !== "active") throw new Error("No active delivery");
+  const route = deliveryRoute(game);
+  if (!route || game.dockedPortId !== route.destination.id || game.encounter) {
+    throw new Error("Dock at the delivery port before handing over cargo");
+  }
+  const { commodityId, quantity, reward } = DELIVERY;
+  if (contractCargo(game) < quantity || (game.player.cargo[commodityId] ?? 0) < quantity) {
+    throw new Error("Buy the contract fuel at Wayfarer Freeport first");
+  }
+  const credits = game.player.credits + reward;
+  if (!Number.isSafeInteger(credits)) throw new RangeError("Credit balance is too large");
+  const cargo = { ...game.player.cargo };
+  const lots = { ...game.player.cargoLots };
+  cargo[commodityId] -= quantity;
+  if (cargo[commodityId] === 0) delete cargo[commodityId];
+  const remaining = consumeLots(cargoLots(game.player, commodityId), quantity).remaining;
+  if (remaining.length) lots[commodityId] = remaining;
+  else delete lots[commodityId];
+  return {
+    ...game,
+    delivery: { status: "delivered", loaded: 0 },
+    player: { ...game.player, credits, cargo, cargoLots: lots },
+  };
 }
 
 export function isDockingProofId(id: string, portId: string): boolean {
@@ -282,52 +373,74 @@ export function trade(game: GameState, order: {
   quantity: number;
 }): GameState {
   if (game.dockedPortId !== order.portId) throw new Error("Dock first to access this market");
-  if (!Number.isInteger(order.quantity) || order.quantity <= 0) {
+  if (!Number.isSafeInteger(order.quantity) || order.quantity <= 0) {
     throw new RangeError("Quantity must be a positive integer");
   }
+  if (order.side !== "buy" && order.side !== "sell") throw new RangeError("Unknown trade side");
   const port = requirePort(game, order.portId);
   const quote = port.market.find((item) => item.commodityId === order.commodityId);
   if (!quote) throw new RangeError("Unknown commodity");
   const cargo = { ...game.player.cargo };
+  const lotsByCommodity = { ...game.player.cargoLots };
+  const lots = cargoLots(game.player, order.commodityId);
   let credits = game.player.credits;
   let stock = quote.stock;
-  let ask = quote.ask;
-  let bid = quote.bid;
+  const referenceAsk = quote.referenceAsk ?? quote.ask;
+  const bounds = askBounds(referenceAsk);
+  const unitPrice = order.side === "buy" ? quote.ask : quote.bid;
+  const total = unitPrice * order.quantity;
+  if (!Number.isSafeInteger(total)) throw new RangeError("Trade total is too large");
+  let ask: number;
+  let costBasis: number | null = total;
 
   if (order.side === "buy") {
     if (cargoUnits(cargo) + order.quantity > game.player.cargoCapacity) {
       throw new RangeError("Cargo hold has no room");
     }
     if (stock < order.quantity) throw new RangeError("Market lacks stock");
-    const total = ask * order.quantity;
     if (credits < total) throw new RangeError("Insufficient credits");
     credits -= total;
     cargo[order.commodityId] = (cargo[order.commodityId] ?? 0) + order.quantity;
     stock -= order.quantity;
-    ask += order.quantity * 2;
-    bid = Math.max(1, Math.floor(ask * 0.76));
+    const last = lots.at(-1);
+    lotsByCommodity[order.commodityId] = last?.unitCost === unitPrice
+      ? [...lots.slice(0, -1), { ...last, quantity: last.quantity + order.quantity }]
+      : [...lots, { quantity: order.quantity, unitCost: unitPrice }];
+    ask = Math.min(bounds.max, quote.ask + order.quantity * 2);
   } else {
     if ((cargo[order.commodityId] ?? 0) < order.quantity) {
       throw new RangeError("Not carrying enough cargo");
     }
-    credits += bid * order.quantity;
+    if (order.quantity > orderLimit(game, quote, "sell")) throw new RangeError("Cargo is reserved for the contract");
+    credits += total;
+    if (!Number.isSafeInteger(credits)) throw new RangeError("Credit balance is too large");
     cargo[order.commodityId] -= order.quantity;
     if (cargo[order.commodityId] === 0) delete cargo[order.commodityId];
     stock += order.quantity;
-    ask = Math.max(4, ask - order.quantity);
-    bid = Math.max(1, Math.floor(ask * 0.76));
+    const consumed = consumeLots(lots, order.quantity);
+    costBasis = consumed.costBasis;
+    if (consumed.remaining.length) lotsByCommodity[order.commodityId] = consumed.remaining;
+    else delete lotsByCommodity[order.commodityId];
+    ask = Math.max(bounds.min, quote.ask - order.quantity);
   }
+  const bid = Math.max(1, Math.floor(ask * 0.76));
 
+  const delivery = game.delivery?.status === "active" && order.side === "buy"
+    && order.commodityId === DELIVERY.commodityId && port.id === game.ports[0].id
+    ? { ...game.delivery, loaded: Math.min(DELIVERY.quantity, game.delivery.loaded + order.quantity) }
+    : game.delivery;
   const updatedPort: Starport = {
     ...port,
     market: port.market.map((item) => item.commodityId === order.commodityId
-      ? { ...item, stock, ask, bid }
+      ? { ...item, stock, ask, bid, referenceAsk }
       : { ...item }),
   };
   return {
     ...game,
     ports: game.ports.map((item) => item.id === updatedPort.id ? updatedPort : item),
-    player: { ...game.player, credits, cargo },
+    player: { ...game.player, credits, cargo, cargoLots: lotsByCommodity },
+    lastTrade: { ...order, unitPrice, costBasis },
+    ...(delivery ? { delivery } : {}),
   };
 }
 
@@ -360,6 +473,12 @@ export function resolveEncounter(
       const quantity = player.cargo[commodityId];
       const lost = Math.min(severity, Math.max(0, quantity - 1));
       player.cargo[commodityId] -= lost;
+      if (lost > 0) {
+        player.cargoLots = {
+          ...player.cargoLots,
+          [commodityId]: consumeLots(cargoLots(game.player, commodityId), lost).remaining,
+        };
+      }
     } else {
       player.hull = Math.max(1, player.hull - 1);
     }
@@ -373,5 +492,8 @@ export function resolveEncounter(
   } else {
     throw new RangeError("Unknown encounter choice");
   }
-  return { ...game, encounter: null, player };
+  const delivery = game.delivery?.status === "active"
+    ? { ...game.delivery, loaded: Math.min(game.delivery.loaded, player.cargo[DELIVERY.commodityId] ?? 0) }
+    : game.delivery;
+  return { ...game, encounter: null, player, ...(delivery ? { delivery } : {}) };
 }
