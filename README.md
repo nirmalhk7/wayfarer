@@ -1,8 +1,10 @@
 # Wayfarer
 
-Wayfarer is an Android space-trading game built around real geography. Command the freighter The Wayward, find favorable prices, deliver cargo, and put the earnings into your ship.
+Wayfarer is an Android space-trading game. In U.S. Live play, **one port is one official Census county subdivision (COUSUB)**. The full ten-digit GEOID identifies its market, including the five-digit parent county GEOID. Crossing into another subdivision opens that port’s market once your phone confirms where you are, even within the same county.
 
-The **North Coast Training** campaign maps fictional stations to Humboldt and Del Norte counties, California. It uses the U.S. Census Bureau’s 2025 county boundaries offline. The displayed station pins are fictional. Public field stations are unavailable. Training simulates docking and uses a separate save. Live navigation requires an explicit start and remains a separate experimental mode.
+The pinned 2025 TIGER/Line shapefile gives the backend an index of all 404 California county subdivisions. Android Live play is a foreground pilot for ten subdivisions in Humboldt and Del Norte counties. This coverage has been replayed with synthetic fixes. Physical field verification remains pending. The app shows boundary outlines and does not provide travel directions.
+
+Training opens offline and preserves its existing shipping, trade and upgrade scenarios. Its fictional scenarios use simulated approaches and keep a separate save.
 
 ## Run locally
 
@@ -10,19 +12,16 @@ Use Node.js 22.13 or later and a configured Android SDK with a device or emulato
 
 ```sh
 npm --prefix mobile ci
+npm test
 npm --prefix mobile run android
 ```
 
-```sh
-npm test
-```
-
-The optional local backend serves the versioned boundary catalog that Android bundles. It listens on loopback and serves public boundaries. The Android game works offline with the same catalog and keeps campaign progress on the device.
+The optional loopback API serves the versioned catalog and official pilot geometry. Android uses bundled data and resolves location on the device.
 
 ```sh
 npm run backend
-curl http://127.0.0.1:4197/healthz
-curl http://127.0.0.1:4197/v1/territories
+curl http://127.0.0.1:4197/v2/ports
+curl http://127.0.0.1:4197/v2/ports/0602390100/boundary
 ```
 
-See the [North Coast playthrough and data provenance](docs/pilot-quickstart.md) and [Android build instructions](mobile/README.md).
+See the [pilot quickstart and exact Shapefile provenance](docs/pilot-quickstart.md) and [Android build instructions](mobile/README.md).

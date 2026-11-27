@@ -11,12 +11,7 @@
       "package": "com.nirmalhk7.wayfarer",
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION",
-        "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION",
-        "POST_NOTIFICATIONS",
-        "RECEIVE_BOOT_COMPLETED"
+        "ACCESS_FINE_LOCATION"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#050B0A",
@@ -24,18 +19,18 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "blockedPermissions": [
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ]
     },
     "plugins": [
       "./plugins/withGradleTestCompatibility.cjs",
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Wayfarer uses your location to generate nearby starports and verify docking.",
-          "locationAlwaysAndWhenInUsePermission": "Wayfarer uses your location to verify docking while you approach your selected starport.",
-          "isAndroidBackgroundLocationEnabled": true,
-          "isAndroidForegroundServiceEnabled": true,
-          "androidForegroundServiceIcon": "./assets/android-icon-monochrome.png"
+          "locationWhenInUsePermission": "Wayfarer uses your location on this device to open your Census subdivision’s market while the app is in use."
         }
       ]
     ],

@@ -18,6 +18,10 @@ import {
 
 import { createNorthCoastTraining, NORTH_COAST_MAP_ID } from "./territories/northCoast";
 
+import { createSubdivisionCampaign } from "./game/subdivisionCampaign";
+import { SUBDIVISION_MAP_ID } from "./territories/subdivisions";
+
+export const SUBDIVISION_LIVE_STORAGE_KEY = "wayfarer.mobile.cousub-live.save.v1";
 export const LIVE_STORAGE_KEY = "wayfarer.mobile.live.save.v2";
 export const TRAINING_STORAGE_KEY = "wayfarer.mobile.training.save.v2";
 export const LEGACY_STORAGE_KEY = "wayfarer.mobile.save.v1";
@@ -258,10 +262,11 @@ function readGameState(value: unknown): GameState | null {
   }
 
   const { mapId } = value;
-  if (mapId !== undefined && mapId !== NORTH_COAST_MAP_ID) return null;
+  if (mapId !== undefined && mapId !== NORTH_COAST_MAP_ID && mapId !== SUBDIVISION_MAP_ID) return null;
   let base: GameState;
   try {
-    base = mapId === NORTH_COAST_MAP_ID ? createNorthCoastTraining() : createGame({ origin, seed: value.seed });
+    base = mapId === SUBDIVISION_MAP_ID ? createSubdivisionCampaign()
+      : mapId === NORTH_COAST_MAP_ID ? createNorthCoastTraining() : createGame({ origin, seed: value.seed });
   } catch {
     return null;
   }
@@ -303,7 +308,10 @@ function readGameState(value: unknown): GameState | null {
     return null;
   }
   if (revealedMarketIds.some((id) => !discoveredPortIds.includes(id))) return null;
-  if (!discoveredPortIds.includes(base.ports[0].id) || !revealedMarketIds.includes(base.ports[0].id)) return null;
+  if (mapId === SUBDIVISION_MAP_ID) {
+    // Authorization comes exclusively from a fresh fix, so it never survives a save.
+    if (dockedPortId !== null || encounter !== null || dockSequence !== 0 || value.delivery !== undefined) return null;
+  } else if (!discoveredPortIds.includes(base.ports[0].id) || !revealedMarketIds.includes(base.ports[0].id)) return null;
   if (
     dockedPortId !== null
     && (!discoveredPortIds.includes(dockedPortId) || !revealedMarketIds.includes(dockedPortId))
@@ -435,7 +443,7 @@ export function encodeGameState(state: GameState): string {
   return JSON.stringify({ version: 2, game });
 }
 
-export function decodeGameState(raw: string | null | undefined, mode?: CampaignMode): GameState | null {
+export function decodeGameState(raw: string | null | undefined, mode?: CampaignMode | "subdivision-live"): GameState | null {
   if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_SAVE_LENGTH) return null;
   let value: unknown;
   try {
@@ -444,8 +452,10 @@ export function decodeGameState(raw: string | null | undefined, mode?: CampaignM
     return null;
   }
   if (!isRecord(value)) return null;
-  if (value.version === 1) return migrateV1Save(value);
+  if (value.version === 1) return mode === "subdivision-live" ? null : migrateV1Save(value);
   if (value.version !== 2) return null;
   const game = readGameState(value.game);
-  return mode === "live" && game?.mapId ? null : game;
+  if (mode === "subdivision-live") return game?.mapId === SUBDIVISION_MAP_ID ? game : null;
+  if ((mode === "live" && game?.mapId) || (mode === "training" && game?.mapId === SUBDIVISION_MAP_ID)) return null;
+  return game;
 }

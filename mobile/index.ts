@@ -1,7 +1,7 @@
 import { registerRootComponent } from 'expo';
 
 // Background tasks must be defined in global scope before React registers or mounts.
-import './src/location/backgroundTasks';
+import './src/location/retiredPointTasks';
 import App from './App';
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);

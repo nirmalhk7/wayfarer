@@ -1,26 +1,18 @@
 # Wayfarer Android
 
-Native Android space-trading game built with Expo and React Native. The Wayward
-flies between fictional stations. Training opens on the North Coast chart of
-Humboldt and Del Norte counties, using the bundled Census boundary release.
-Station pins in Training are fictional. Public field stations are unavailable.
+Wayfarer is a native Android space-trading game. Every U.S. Live port is one
+official TIGER/Line Census county subdivision, identified by its ten-digit GEOID.
+An accurate foreground fix can open a new market on crossing a subdivision
+boundary. You can cross to a new port without leaving the same parent county.
 
-## Play loop
+Live starts only after an opt-in. Location matching stays on the device. Live
+markets pause near ambiguous borders, outside coverage, when a fix expires, and
+while the app is in the background. The North Coast pilot covers ten subdivisions
+in Humboldt and Del Norte counties. Field verification is pending.
 
-- Follow market rumors and choose a station on the chart.
-- Simulate approach and docking qualification in Training, then visit the station
-  to trade cargo or complete a delivery. County membership alone grants no docking.
-- Expand the hold or reinforce the hull. Progress persists in a local save.
-
-Training starts without requesting location. Select Live and then **Start live
-navigation** to opt in to the legacy experimental mode. Live uses a first location
-fix to generate test points around a freeport. These points are unaudited. Do not
-travel to them. Experimental docking requires accurate, stationary time within
-the selected port’s 120-metre perimeter for 10 observed minutes.
-
-Android background location is optional. Training and Live use separate local
-saves. Older Training saves retain their previous map until reset. Raw location
-samples and trails are never persisted.
+Training opens offline. Plot simulated approaches, trade, deliver contracts and
+upgrade your ship. It uses a separate save. Training scenarios can share the same
+subdivision and carry no Live access. See the [full pilot and source notes](../docs/pilot-quickstart.md).
 
 ## Run during development
 

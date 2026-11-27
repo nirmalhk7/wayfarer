@@ -35,6 +35,33 @@ test("local backend entry point serves the Android catalog and has no web or wri
   assert.equal(data.revision, "north-coast-2025-cb500k.v1");
   assert.deepEqual(data.features.map((county) => county.id), ["06015", "06023"]);
 
+  const portsResponse = await fetch(endpoint + "/v2/ports");
+  assert.equal(portsResponse.status, 200);
+  const ports = await portsResponse.json();
+  assert.equal(ports.unit, "COUSUB");
+  assert.equal(ports.ports.length, 404);
+  assert.equal(new Set(ports.ports.map(({ geoid }) => geoid)).size, 404);
+  for (const port of ports.ports) {
+    assert.match(port.geoid, /^06\d{8}$/);
+    assert.equal(port.countyGeoid, port.geoid.slice(0, 5));
+    assert.equal(port.countySubdivisionCode, port.geoid.slice(5));
+  }
+  const livePorts = ports.ports.filter(({ liveAvailability }) => liveAvailability === "foreground-pilot");
+  assert.equal(livePorts.length, 10);
+  assert.deepEqual(ports.coverage.liveCountyGeoids, ["06015", "06023"]);
+  assert.equal(ports.coverage.fieldVerified, false);
+  const arcata = await fetch(endpoint + "/v2/ports/0602390100/boundary");
+  assert.equal(arcata.status, 200);
+  const boundary = await arcata.json();
+  assert.equal(boundary.geoid, "0602390100");
+  assert.equal(boundary.countyGeoid, "06023");
+  assert.equal(boundary.crs, "EPSG:4269");
+  const shape = await readFile(new URL("../mobile/src/territories/cousub/0602390100.json", import.meta.url), "utf8");
+  assert.deepEqual(boundary.polygons, JSON.parse(shape));
+  const outside = ports.ports.find(({ liveAvailability }) => liveAvailability === "outside-pilot");
+  assert.equal((await fetch(endpoint + "/v2/ports/" + outside.geoid + "/boundary")).status, 404);
+  assert.equal((await fetch(endpoint + "/v2/ports/06023/boundary")).status, 404);
+
   const head = await fetch(endpoint + "/v1/territories", { method: "HEAD" });
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");

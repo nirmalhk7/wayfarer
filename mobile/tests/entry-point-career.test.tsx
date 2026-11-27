@@ -1,7 +1,7 @@
 
 import { afterEach, expect, jest, test } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { registerRootComponent } from "expo";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
@@ -9,7 +9,7 @@ import { AccessibilityInfo, Animated, Share } from "react-native";
 
 import "../index";
 import { createGame } from "../src/game/engine";
-import { decodeGameState, encodeGameState, LEGACY_STORAGE_KEY, LIVE_RESET_MARKER, storageKeyForMode } from "../src/persistence";
+import { decodeGameState, encodeGameState, LEGACY_STORAGE_KEY, LIVE_RESET_MARKER, SUBDIVISION_LIVE_STORAGE_KEY, storageKeyForMode } from "../src/persistence";
 import { createDockingCoordinator } from "../src/ui/dockingCoordinator";
 import { DOCKING_SESSION_STORAGE_KEY, persistDockingCoordinator } from "../src/ui/dockingSessionStore";
 
@@ -28,7 +28,7 @@ jest.mock("expo-location", () => ({
   hasStartedLocationUpdatesAsync: jest.fn(async () => false),
   stopGeofencingAsync: jest.fn(async () => {}),
   stopLocationUpdatesAsync: jest.fn(async () => {}),
-  Accuracy: { Balanced: 3 },
+  Accuracy: { Balanced: 3, High: 4 },
   PermissionStatus: { GRANTED: "granted" },
   getCurrentPositionAsync: jest.fn(),
   watchPositionAsync: jest.fn(),
@@ -64,7 +64,9 @@ async function order(side: "Buy" | "Sell", commodity: string, quantity: number) 
 }
 
 async function campaign(mode: "live" | "training") {
-  return decodeGameState(await AsyncStorage.getItem(storageKeyForMode(mode)));
+  return mode === "live"
+    ? decodeGameState(await AsyncStorage.getItem(SUBDIVISION_LIVE_STORAGE_KEY), "subdivision-live")
+    : decodeGameState(await AsyncStorage.getItem(storageKeyForMode("training")), "training");
 }
 
 test("Expo entry point settles a Training shipment, pays for capacity and restores it", async () => {
@@ -101,7 +103,7 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   expect(screen.getByText("Paid 296 cr · 37 cr per unit")).toBeTruthy();
   await tab("Chart");
   const target = /^Select Vela Outpost, unvisited/;
-  await press("Port list · 1 of 7 visited");
+  await press("Scenario list · 1 of 7 visited");
   await press(target);
   expect(screen.getByRole("tab", { name: "Bridge" }).props.accessibilityState.selected).toBe(true);
   expect(screen.getByRole("header", { name: "Vela Outpost" })).toBeTruthy();
@@ -114,7 +116,7 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   expect(screen.getByTestId("vista-docked")).toBeTruthy();
   await tab("Chart");
   expect(screen.getByRole("button", { name: /^Select Vela Outpost, visited/ })).toBeTruthy();
-  expect(screen.getByText("Port list · 2 of 7 visited")).toBeTruthy();
+  expect(screen.getByText("Scenario list · 2 of 7 visited")).toBeTruthy();
 
   await tab("Station");
   await order("Sell", "Ion Fuel", 8);
@@ -181,7 +183,7 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   await tab("Hold");
   await press("Reset Live game data");
   await press("Cancel");
-  expect((await campaign("live"))?.origin).toEqual(origin);
+  expect(decodeGameState(await AsyncStorage.getItem(storageKeyForMode("live")), "live")?.origin).toEqual(origin);
 
   jest.mocked(TaskManager.isAvailableAsync).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
   jest.mocked(Location.hasStartedGeofencingAsync).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
@@ -214,7 +216,7 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   expect(share).not.toHaveBeenCalled();
   expect(await AsyncStorage.getItem(storageKeyForMode("training"))).toBe(trainingAfter);
 
-  const newOrigin = { latitude: 0, longitude: .03 };
+  const newOrigin = { latitude: 40.7143559, longitude: -124.0990456 };
   jest.mocked(Location.requestForegroundPermissionsAsync).mockResolvedValueOnce({
     status: Location.PermissionStatus.GRANTED, granted: true, canAskAgain: true, expires: "never",
   });
@@ -224,8 +226,8 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   });
   jest.mocked(Location.watchPositionAsync).mockResolvedValueOnce({ remove() {} });
   await press("Start live navigation");
-  await screen.findByText("GPS LOCK · ±5 M");
-  await waitFor(async () => expect((await campaign("live"))?.origin).toEqual(newOrigin));
+  await screen.findByRole("header", { name: "Eureka CCD" });
+  await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds).toEqual(["0602390930"]));
   expect((await campaign("live"))?.player.credits).toBe(900);
   expect(await AsyncStorage.getItem(storageKeyForMode("training"))).toBe(trainingAfter);
 });
@@ -243,8 +245,8 @@ test("the registered app fulfils the local contract once across failed save, ret
   expect(screen.getByRole("header", { name: "North Coast chart" })).toBeTruthy();
   expect(screen.getByText(/Humboldt and Del Norte counties/)).toBeTruthy();
   expect(screen.getByText("Simulated ship · Humboldt County")).toBeTruthy();
-  expect(screen.getByText(/County membership does not qualify a ship to dock/)).toBeTruthy();
-  expect(screen.getByText(/Public pilot preset unavailable/)).toBeTruthy();
+  expect(screen.getByText(/In Live, each Census subdivision is one port/)).toBeTruthy();
+  expect(screen.getByText(/Only official subdivisions are Live ports/)).toBeTruthy();
   expect(screen.getByText(/Do not travel to these points/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /enable public pilot/i })).toBeNull();
   await tab("Bridge");
@@ -273,10 +275,10 @@ test("the registered app fulfils the local contract once across failed save, ret
   expect(screen.getByText("2 / 2 Ion Fuel reserved")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Deliver reserved cargo" }).props.accessibilityState.disabled).toBe(true);
   await tab("Chart");
-  await press("Port list · 1 of 7 visited");
+  await press("Scenario list · 1 of 7 visited");
   await press(/^Select Cinder Exchange, unvisited, Del Norte County/);
   expect(screen.getByTestId("vista-flight")).toBeTruthy();
-  expect(screen.getByText(/CND-04 · Del Norte County · Approach/)).toBeTruthy();
+  expect(screen.getByText(/CND-04 · .* · Approach/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Enter station market" })).toBeNull();
   expect(screen.getByRole("header", { name: "Cinder Exchange" })).toBeTruthy();
   await press("Simulate approach to Cinder Exchange");
@@ -326,14 +328,14 @@ test("the atlas starts without permission and an explicit denied Live start pres
   const reads = jest.mocked(Location.getCurrentPositionAsync).mock.calls.length;
   await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
-  expect(screen.getByText(/WFR-00 · Humboldt County · Approach/)).toBeTruthy();
+  expect(screen.getByText(/WFR-00 · Arcata CCD · Approach/)).toBeTruthy();
   await press("Simulate approach to Wayfarer Freeport");
   await press("PAY");
-  expect(screen.getByText(/WFR-00 · Humboldt County · Docked/)).toBeTruthy();
+  expect(screen.getByText(/WFR-00 · Arcata CCD · Docked/)).toBeTruthy();
   await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", false);
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls);
   await press("Start live navigation");
-  await screen.findByText("LOCATION DENIED · LIVE NAVIGATION REMAINS PAUSED");
+  await screen.findByText("Location permission denied");
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls + 1);
   expect(jest.mocked(Location.getCurrentPositionAsync).mock.calls).toHaveLength(reads);
   await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", true);
@@ -341,4 +343,87 @@ test("the atlas starts without permission and an explicit denied Live start pres
   await press("Enter station market");
   expect(screen.getByText("Cinder Reserve Run")).toBeTruthy();
   expect(await campaign("live")).toBeNull();
+});
+
+test("Live switches markets at the GEOID boundary within Humboldt without geofencing or data upload", async () => {
+  const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
+  const eureka = { latitude: 40.7143559, longitude: -124.0990456 };
+  const arcata = { latitude: 40.735612, longitude: -123.8656711 };
+  const border = { latitude: 40.73685, longitude: -123.945483 };
+  const grant = { status: Location.PermissionStatus.GRANTED, granted: true, canAskAgain: true, expires: "never" } as const;
+  const network = jest.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Offline test"));
+  const time = jest.spyOn(Date, "now");
+  let now = 2_000_000;
+  time.mockImplementation(() => now);
+  const fix = (point: typeof eureka, timestamp = now): Location.LocationObject => ({
+    coords: { ...point, accuracy: 5, altitude: null, altitudeAccuracy: null, speed: null, heading: null },
+    timestamp,
+  });
+  let listener: Location.LocationCallback | undefined;
+  const remove = jest.fn();
+  jest.mocked(Location.requestForegroundPermissionsAsync).mockResolvedValueOnce(grant);
+  jest.mocked(Location.getCurrentPositionAsync).mockResolvedValueOnce(fix(eureka));
+  jest.mocked(Location.watchPositionAsync).mockImplementationOnce(async (_options, callback) => {
+    listener = callback;
+    return { remove };
+  });
+  const old = createGame({ origin: { latitude: 0, longitude: 0 } });
+  old.player.credits = 1042;
+  const archive = encodeGameState(old);
+  await AsyncStorage.setItem(storageKeyForMode("live"), archive);
+  const mounted = await render(<RegisteredApp />);
+  const training = await screen.findByRole("switch", { name: "Training simulator" });
+  await fireEvent(training, "valueChange", false);
+  await press("Start live navigation");
+  await screen.findByRole("header", { name: "Eureka CCD" });
+  await press("Enter station market");
+  await order("Buy", "Ion Fuel", 1);
+  await waitFor(async () => expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1));
+  const first = (await campaign("live"))!;
+  expect(first.player.credits).toBeLessThan(1042);
+  expect(first.discoveredPortIds).toEqual(["0602390930"]);
+  expect(first.dockedPortId).toBeNull();
+
+  expect(listener).toBeDefined();
+  await act(async () => listener!(fix(eureka))); // Duplicate timestamp.
+  now += 1_000;
+  await act(async () => listener!(fix({ ...eureka, latitude: eureka.latitude + .0001 })));
+  expect(screen.getByRole("header", { name: "Eureka CCD" })).toBeTruthy();
+  expect(await campaign("live")).toEqual(first);
+
+  for (const longitude of [border.longitude - .00009, border.longitude + .00009]) {
+    now += 1_000;
+    await act(async () => listener!(fix({ ...border, longitude })));
+    expect(screen.getByText("Market encrypted")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Buy Ion Fuel/ })).toBeNull();
+  }
+  expect(await campaign("live")).toEqual(first);
+
+  now += 1_000;
+  await act(async () => listener!(fix(arcata)));
+  await screen.findByRole("header", { name: "Arcata CCD" });
+  expect(screen.getByRole("button", { name: /^Buy Ion Fuel/ })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /simulate approach/i })).toBeNull();
+  await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds)
+    .toEqual(["0602390930", "0602390100"]));
+  await tab("Chart");
+  expect(screen.getByText("Humboldt County · GEOID 0602390100")).toBeTruthy();
+  expect(screen.getByText("Arcata CCD · Present")).toBeTruthy();
+  await tab("Station");
+  const crossingTime = now;
+  now += 31_000;
+  await act(async () => listener!(fix(arcata, crossingTime + 1)));
+  expect(screen.getByText("Market encrypted")).toBeTruthy();
+  expect(screen.getByText("Location fix expired")).toBeTruthy();
+  expect(await AsyncStorage.getItem(storageKeyForMode("live"))).toEqual(archive);
+  expect(network).not.toHaveBeenCalled();
+
+  await mounted.unmount();
+  expect(remove).toHaveBeenCalledTimes(1);
+  await render(<RegisteredApp />);
+  const switchAgain = await screen.findByRole("switch", { name: "Training simulator" });
+  await fireEvent(switchAgain, "valueChange", false);
+  await tab("Station");
+  expect(screen.getByText("Market encrypted")).toBeTruthy();
+  expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1);
 });

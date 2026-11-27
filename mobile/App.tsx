@@ -1,15 +1,11 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Haptics from "expo-haptics";
-import * as Location from "expo-location";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  AppState,
   BackHandler,
   Modal,
-  PermissionsAndroid,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -29,7 +25,6 @@ import {
   deliveryRoute,
   UPGRADE_COST,
   buyUpgrade,
-  createGame,
   distanceMeters,
   getRumors,
   orderLimit,
@@ -46,19 +41,14 @@ import {
   formatDistance,
   rumorSummary,
 } from "./src/game/presentation";
-import {
-  armSelectedPortGeofence,
-  armSelectedPortWithForegroundFallback,
-  disarmSelectedPortGeofence,
-  getBackgroundLocationStatus,
-  requestBackgroundLocationPermissions,
-  subscribeToBackgroundLocationSamples,
-  type LocationSample,
-} from "./src/location";
-import { requestAndroidNotificationPermission } from "./src/location/notificationPermission";
+import { useSubdivisionArrival } from "./src/location/useSubdivisionArrival";
+import { stopLegacyPointTasks } from "./src/location/retiredPointTasks";
+import { createSubdivisionCampaign, recordSubdivisionVisit } from "./src/game/subdivisionCampaign";
+import { locateSubdivision, PILOT_PORTS } from "./src/territories/subdivisions";
 import {
   LEGACY_STORAGE_KEY,
   LIVE_RESET_MARKER,
+  SUBDIVISION_LIVE_STORAGE_KEY,
   decodeGameState,
   encodeGameState,
   storageKeyForMode,
@@ -74,41 +64,21 @@ import {
 import {
   applyCoordinatorSample,
   createDockingCoordinator,
-  repairDockingCoordinatorForGame,
   selectDockingTarget,
   type DockingCoordinator,
 } from "./src/ui/dockingCoordinator";
-import {
-  acknowledgePersistedDockingProof,
-  clearPersistedDockingCoordinator,
-  loadPersistedDockingCoordinator,
-  pausePersistedDockingCoordinator,
-  persistDockingCoordinator,
-  persistSelectedDockingTarget,
-  processPersistedBackgroundSamples,
-  processPersistedForegroundSamples,
-  subscribeToDockingCoordinator,
-} from "./src/ui/dockingSessionStore";
-import {
-  BackgroundPermissionModal,
-  DockingStatusCard,
-} from "./src/ui/DockingStatusCard";
-
+import { clearPersistedDockingCoordinator } from "./src/ui/dockingSessionStore";
 import { COCKPIT as COLORS } from "./src/ui/cockpitTheme";
 import { FlightScene } from "./src/ui/FlightScene";
-import { TerritoryChart } from "./src/ui/TerritoryChart";
+import { LiveSubdivisionChart, TerritoryChart } from "./src/ui/TerritoryChart";
 import { createNorthCoastTraining, NORTH_COAST_ORIGIN, territoryAt, usesNorthCoastTrainingMap } from "./src/territories/northCoast";
 
-const DEMO_ORIGIN: Coordinates = { latitude: 39.7392, longitude: -104.9903 };
-
 async function clearLiveDockingData() {
+  await stopLegacyPointTasks();
   await Promise.all([
     clearPersistedDockingCoordinator(),
     AsyncStorage.removeItem(LEGACY_STORAGE_KEY),
   ]);
-  const background = await getBackgroundLocationStatus();
-  // Queue disarm even if a previously requested registration is still pending.
-  if (background.available) await disarmSelectedPortGeofence();
 }
 const SCOPE_STARS = [[9,18], [28,14], [43,34], [64,12], [89,17], [91,57], [72,63], [18,78], [51,85], [88,88]];
 
@@ -418,36 +388,6 @@ function EncounterModal({ game, onResolve }: {
   );
 }
 
-function toLocationSample(location: Location.LocationObject): LocationSample {
-  return {
-    latitude: location.coords.latitude,
-    longitude: location.coords.longitude,
-    horizontalAccuracyMeters: location.coords.accuracy,
-    altitudeMeters: location.coords.altitude,
-    verticalAccuracyMeters: location.coords.altitudeAccuracy,
-    headingDegrees: location.coords.heading,
-    speedMetersPerSecond: location.coords.speed,
-    recordedAtMs: location.timestamp,
-    isMocked: location.mocked === true,
-  };
-}
-
-async function requestBackgroundNotificationAccess() {
-  const androidApiLevel = typeof Platform.Version === "number"
-    ? Platform.Version
-    : Number.parseInt(String(Platform.Version), 10);
-  return requestAndroidNotificationPermission({
-    platform: Platform.OS,
-    apiLevel: Number.isFinite(androidApiLevel) ? androidApiLevel : 0,
-    checkPostNotifications: () => PermissionsAndroid.check(
-      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-    ),
-    requestPostNotifications: () => PermissionsAndroid.request(
-      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-    ),
-  });
-}
-
 export default function App() {
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
@@ -459,21 +399,21 @@ export default function App() {
 function Wayfarer() {
   const { width } = useWindowDimensions();
   const initialCampaigns = useMemo<Campaigns>(() => ({
-    live: createGame({ origin: DEMO_ORIGIN, seed: "wayfarer-mobile-live-v2" }),
+    live: createSubdivisionCampaign(),
     training: createNorthCoastTraining(),
   }), []);
   const [campaigns, setCampaigns] = useState<Campaigns>(initialCampaigns);
   const [mode, setMode] = useState<CampaignMode>("training");
   const [positions, setPositions] = useState<Record<CampaignMode, Coordinates>>({
-    live: DEMO_ORIGIN,
+    live: initialCampaigns.live.origin,
     training: NORTH_COAST_ORIGIN,
   });
   const [selectedPortIds, setSelectedPortIds] = useState<Record<CampaignMode, string>>({
-    live: "port-0",
+    live: initialCampaigns.live.ports[0].id,
     training: "port-0",
   });
   const [coordinators, setCoordinators] = useState<Record<CampaignMode, DockingCoordinator>>({
-    live: createDockingCoordinator({ id: "port-0", coords: DEMO_ORIGIN }),
+    live: createDockingCoordinator({ id: initialCampaigns.live.ports[0].id, coords: initialCampaigns.live.origin }),
     training: createDockingCoordinator({ id: "port-0", coords: NORTH_COAST_ORIGIN }),
   });
   const [tab, setTab] = useState<Tab>("bridge");
@@ -481,29 +421,24 @@ function Wayfarer() {
   const [showPortList, setShowPortList] = useState(false);
   const [booting, setBooting] = useState(true);
   const [saveReady, setSaveReady] = useState(false);
-  const [livePaused, setLivePaused] = useState(true);
-  const livePausedRef = useRef(true);
+  const [liveRequested, setLiveRequested] = useState(false);
   const [liveStartAttempt, setLiveStartAttempt] = useState(0);
+  const live = useSubdivisionArrival(mode === "live" && liveRequested, liveStartAttempt);
   const [resetMode, setResetMode] = useState<CampaignMode | null>(null);
   const [resetting, setResetting] = useState(false);
   const [contractSaving, setContractSaving] = useState(false);
   const contractSavingRef = useRef(false);
-  const liveProofWrites = useRef(0);
-  const deferredCoordinator = useRef<DockingCoordinator | null>(null);
   const resetInProgress = useRef(false);
   const emptyTrainingSave = useRef<GameState | null>(null);
-  const [foregroundOnly, setForegroundOnly] = useState(true);
-  const [showBackgroundExplanation, setShowBackgroundExplanation] = useState(false);
-  const [locationStatus, setLocationStatus] = useState("ACQUIRING NAV SIGNAL");
+  const locationStatus = live.presence.status;
   const [notice, setNotice] = useState("WELCOME, CAPTAIN");
-  const locationSubscription = useRef<Location.LocationSubscription | null>(null);
   const campaignsRef = useRef(campaigns);
-  const selectedPortIdsRef = useRef(selectedPortIds);
   const liveSaveQueue = useRef(createLatestWriteQueue<GameState | null>(async (snapshot) => {
     if (snapshot) {
-      await AsyncStorage.setItem(storageKeyForMode("live"), encodeGameState(snapshot));
+      await AsyncStorage.setItem(SUBDIVISION_LIVE_STORAGE_KEY, encodeGameState(snapshot));
     } else {
       // Mark Live as paused before removing the old coordinate-bearing data.
+      await AsyncStorage.setItem(SUBDIVISION_LIVE_STORAGE_KEY, LIVE_RESET_MARKER);
       await AsyncStorage.setItem(storageKeyForMode("live"), LIVE_RESET_MARKER);
       await clearLiveDockingData();
     }
@@ -516,28 +451,25 @@ function Wayfarer() {
 
   const game = campaigns[mode];
   const position = positions[mode];
-  const selectedPortId = selectedPortIds[mode];
+  const selectedPortId = mode === "live" ? live.presence.geoid : selectedPortIds.training;
   const coordinator = coordinators[mode];
 
   const selectedPort = useMemo(
     () => game.ports.find((port) => port.id === selectedPortId) ?? game.ports[0],
     [game.ports, selectedPortId],
   );
-  const dockedPort = mode === "live" && livePaused ? null : activeDockedPort(game, coordinator);
+  const pilotPort = PILOT_PORTS.find((port) => port.geoid === live.presence.geoid);
+  const dockedPort = mode === "live"
+    ? game.ports.find((port) => port.id === pilotPort?.geoid) ?? null
+    : activeDockedPort(game, coordinator);
   const berthed = dockedPort?.id === selectedPort.id;
   const regionalTraining = mode === "training" && usesNorthCoastTrainingMap(game);
-  const selectedCounty = regionalTraining ? territoryAt(selectedPort.position) : null;
+  const trainingArea = regionalTraining ? locateSubdivision(selectedPort.position, 0) : null;
+  const selectedCounty = trainingArea?.kind === "inside" ? trainingArea.port.countyName
+    : regionalTraining ? territoryAt(selectedPort.position)?.name : pilotPort?.countyName;
   const selectedDistance = distanceMeters(position, selectedPort.position);
   const usedCargo = cargoUnits(game.player.cargo);
   const radarSize = Math.min(width - 40, 440);
-  const liveSession = coordinators.live.session;
-  const liveAuthorizedSession = coordinators.live.authorizedDock?.session;
-  const livePausedAt = liveAuthorizedSession?.pausedAt ?? liveSession.pausedAt;
-  const liveSessionActiveAt = liveSession.pausedAt === null ? liveSession.lastValidAt : null;
-  const liveAuthorizedActiveAt = liveAuthorizedSession?.pausedAt === null
-    ? liveAuthorizedSession.lastValidAt
-    : null;
-
   useEffect(() => {
     const back = BackHandler.addEventListener("hardwareBackPress", () => {
       if (tab === "bridge") return false;
@@ -548,289 +480,58 @@ function Wayfarer() {
   }, [tab]);
 
   useEffect(() => { campaignsRef.current = campaigns; }, [campaigns]);
-  useEffect(() => { selectedPortIdsRef.current = selectedPortIds; }, [selectedPortIds]);
-
-  useEffect(() => {
-    if (livePausedAt === null) return;
-    const delay = Math.max(0, livePausedAt + 30_001 - Date.now());
-    const timeout = setTimeout(() => { void pausePersistedDockingCoordinator(); }, delay);
-    return () => clearTimeout(timeout);
-  }, [livePausedAt]);
-
-  useEffect(() => {
-    const activeTimestamps = [liveSessionActiveAt, liveAuthorizedActiveAt]
-      .filter((timestamp): timestamp is number => timestamp !== null && timestamp !== undefined);
-    if (activeTimestamps.length === 0) return;
-    const oldest = Math.min(...activeTimestamps);
-    const delay = Math.max(0, oldest + 30_001 - Date.now());
-    const timeout = setTimeout(() => { void pausePersistedDockingCoordinator(); }, delay);
-    return () => clearTimeout(timeout);
-  }, [liveAuthorizedActiveAt, liveSessionActiveAt]);
-
-  const processLiveCoordinator = useEffectEvent(async (
-    next: DockingCoordinator,
-    gameSnapshot = campaignsRef.current.live,
-  ) => {
-    if (livePausedRef.current) return;
-    if (contractSavingRef.current) {
-      deferredCoordinator.current = next;
-      return;
-    }
-    const transition = resolveCoordinatorTransition(gameSnapshot, next);
-    if (transition.proofId === null) {
-      setCoordinators((current) => ({ ...current, live: transition.coordinator }));
-      if (transition.game !== gameSnapshot) {
-        setCampaigns((current) => current.live === gameSnapshot
-          ? { ...current, live: transition.game }
-          : current);
-        setNotice("DEPARTED · DOCKING LINK REVOKED");
-      }
-      return;
-    }
-
-    liveProofWrites.current += 1;
-    try {
-      // The game must reach durable storage first. A crash before proof
-      // acknowledgment leaves an unconsumed coordinator proof that can replay.
-      await liveSaveQueue.current.writeThrough(transition.game);
-      if (livePausedRef.current) return;
-      setCampaigns((current) => current.live === gameSnapshot
-        ? { ...current, live: transition.game }
-        : current);
-      const acknowledged = await acknowledgePersistedDockingProof(transition.proofId);
-      if (!acknowledged) return;
-      setNotice(transition.game.dockedPortId
-        ? "DOCKING PROOF ACCEPTED"
-        : "DEPARTED · DOCKING LINK REVOKED");
-    } catch {
-      setNotice("SAVE FAILED · DOCKING PROOF RETAINED");
-    } finally {
-      liveProofWrites.current -= 1;
-    }
-  });
-
-  useEffect(() => {
-    if (contractSaving || !deferredCoordinator.current) return;
-    const next = deferredCoordinator.current;
-    deferredCoordinator.current = null;
-    void processLiveCoordinator(next);
-  }, [contractSaving]);
-
-  useEffect(() => subscribeToDockingCoordinator((next) => {
-    void processLiveCoordinator(next);
-  }), []);
-
-  useEffect(() => subscribeToBackgroundLocationSamples((sample) => {
-    if (livePausedRef.current) return;
-    setPositions((current) => ({
-      ...current,
-      live: { latitude: sample.latitude, longitude: sample.longitude },
-    }));
-    setLocationStatus(`BACKGROUND FIX · ±${Math.round(sample.horizontalAccuracyMeters ?? 0)} M`);
-  }), []);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active" || booting || livePausedRef.current) return;
-      void getBackgroundLocationStatus()
-        .then((status) => {
-          if (livePausedRef.current) return;
-          if (!status.available) {
-            setForegroundOnly(true);
-            setNotice("BACKGROUND TASKS UNAVAILABLE · FOREGROUND ONLY");
-            return;
-          }
-          const foregroundGranted = status.permissions.foreground === "granted";
-          const backgroundGranted = status.permissions.background === "granted";
-          setForegroundOnly(!backgroundGranted);
-          if (!foregroundGranted) {
-            locationSubscription.current?.remove();
-            locationSubscription.current = null;
-            setLocationStatus("GPS PERMISSION REVOKED");
-            setNotice("LOCATION REVOKED · QUALIFICATION PAUSED");
-            void pausePersistedDockingCoordinator();
-          } else if (!backgroundGranted) {
-            setNotice("BACKGROUND PERMISSION DENIED · FOREGROUND ONLY");
-          }
-        })
-        .catch(() => setForegroundOnly(true));
-    });
-    return () => subscription.remove();
-  }, [booting]);
 
   useEffect(() => {
     let cancelled = false;
-    async function boot() {
-      let live: GameState | null = null;
-      let training: GameState | null = null;
-      let resetPending = false;
+    async function restore() {
       try {
-        const [liveRaw, trainingRaw, legacyRaw] = await Promise.all([
+        const [newLiveRaw, oldLiveRaw, trainingRaw, legacyRaw] = await Promise.all([
+          AsyncStorage.getItem(SUBDIVISION_LIVE_STORAGE_KEY),
           AsyncStorage.getItem(storageKeyForMode("live")),
           AsyncStorage.getItem(storageKeyForMode("training")),
           AsyncStorage.getItem(LEGACY_STORAGE_KEY),
         ]);
-        resetPending = liveRaw === LIVE_RESET_MARKER;
-        live = resetPending ? null : decodeGameState(liveRaw ?? legacyRaw, "live");
-        training = decodeGameState(trainingRaw);
-      } catch {
-        // Corrupt or unavailable saves start isolated local campaigns.
-      }
-
-      if (cancelled) return;
-      const keepLivePaused = () => {
-        const nextLive = live ?? initialCampaigns.live;
-        const nextTraining = training ?? initialCampaigns.training;
-        const coldStart = liveStartAttempt === 0;
-        setCampaigns((current) => ({ live: nextLive, training: coldStart ? nextTraining : current.training }));
-        setPositions((current) => ({ live: nextLive.origin, training: coldStart ? nextTraining.origin : current.training }));
+        const resetPending = newLiveRaw === LIVE_RESET_MARKER
+          || (oldLiveRaw === LIVE_RESET_MARKER && newLiveRaw === null);
+        if (resetPending) await clearLiveDockingData();
+        else await stopLegacyPointTasks().catch(() => {});
+        if (cancelled) return;
+        const oldLive = resetPending ? null : decodeGameState(oldLiveRaw ?? legacyRaw, "live");
+        const nextLive = decodeGameState(newLiveRaw, "subdivision-live")
+          ?? (oldLive ? createSubdivisionCampaign(oldLive) : initialCampaigns.live);
+        const nextTraining = decodeGameState(trainingRaw, "training") ?? initialCampaigns.training;
+        setCampaigns({ live: nextLive, training: nextTraining });
+        setPositions((current) => ({ ...current, training: nextTraining.origin }));
         setCoordinators((current) => ({
-          live: createDockingCoordinator({ id: nextLive.ports[0].id, coords: nextLive.origin }),
-          training: coldStart
-            ? createDockingCoordinator({ id: nextTraining.ports[0].id, coords: nextTraining.origin })
-            : current.training,
+          ...current,
+          training: createDockingCoordinator({ id: nextTraining.ports[0].id, coords: nextTraining.origin }),
         }));
-        setSelectedPortIds((current) => ({
-          live: nextLive.ports[0].id,
-          training: coldStart ? nextTraining.ports[0].id : current.training,
-        }));
-        livePausedRef.current = true;
-        setLivePaused(true);
-        setLocationStatus("LIVE NAVIGATION PAUSED");
-        setSaveReady(true);
-        setBooting(false);
-      };
-      if (resetPending) {
-        try {
-          await clearLiveDockingData();
-        } catch {
-          if (!cancelled) {
-            keepLivePaused();
-            setNotice("LIVE CLEANUP INCOMPLETE · TRY RESET AGAIN");
-          }
-          return;
-        }
-        if (cancelled) return;
-      }
-      if (liveStartAttempt === 0) {
-        keepLivePaused();
-        return;
-      }
-
-      try {
-        const permission = await Location.requestForegroundPermissionsAsync();
-        if (cancelled) return;
-        if (permission.status !== "granted") {
-          keepLivePaused();
-          setNotice("LOCATION DENIED · LIVE NAVIGATION REMAINS PAUSED");
-          return;
-        }
-
-        const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        if (cancelled) return;
-        const coordinates = {
-          latitude: current.coords.latitude,
-          longitude: current.coords.longitude,
-        };
-        const nextLive = live ?? createGame({ origin: coordinates, seed: "wayfarer-mobile-live-v2" });
-        // A foreground process restart is a discontinuity: pause first so the
-        // next fix can recover, but never earns the unobserved wall-clock gap.
-        const persisted = await pausePersistedDockingCoordinator()
-          ?? await loadPersistedDockingCoordinator();
-        const repaired = persisted ? repairDockingCoordinatorForGame(nextLive, persisted) : null;
-        const persistedPort = repaired
-          ? nextLive.ports.find((port) => port.id === repaired.target.id)
-          : null;
-        const liveTargetPort = persistedPort ?? nextLive.ports[0];
-        const liveCoordinator = persistedPort && repaired
-          ? { ...repaired, target: { id: persistedPort.id, coords: persistedPort.position } }
-          : createDockingCoordinator({ id: liveTargetPort.id, coords: liveTargetPort.position });
-        campaignsRef.current = { ...campaignsRef.current, live: nextLive };
-        selectedPortIdsRef.current = { ...selectedPortIdsRef.current, live: liveTargetPort.id };
-        setCampaigns((current) => ({ ...current, live: nextLive }));
-        setPositions((current) => ({ ...current, live: coordinates }));
-        setSelectedPortIds((current) => ({ ...current, live: liveTargetPort.id }));
-        setCoordinators((current) => ({ ...current, live: liveCoordinator }));
-        await persistDockingCoordinator(liveCoordinator);
-        if (resetPending) await liveSaveQueue.current.writeThrough(nextLive);
-        if (cancelled) return;
-        livePausedRef.current = false;
-        setLivePaused(false);
-        setLocationStatus(`GPS LOCK · ±${Math.round(current.coords.accuracy ?? 0)} M`);
-
-        let backgroundGranted = false;
-        try {
-          const backgroundStatus = await getBackgroundLocationStatus();
-          backgroundGranted = backgroundStatus.permissions.background === "granted";
-        } catch {
-          backgroundGranted = false;
-        }
-        const notificationPermission = backgroundGranted
-          ? await requestBackgroundNotificationAccess()
-          : "not-required";
-        if (cancelled) return;
-        let backgroundMode: "background" | "foreground-only" = backgroundGranted
-          ? "background"
-          : "foreground-only";
-        if (backgroundGranted) {
-          backgroundMode = await armSelectedPortWithForegroundFallback(armSelectedPortGeofence, {
-            portId: liveTargetPort.id,
-            latitude: liveTargetPort.position.latitude,
-            longitude: liveTargetPort.position.longitude,
-            radiusMeters: 120,
-          });
-          if (backgroundMode === "foreground-only") {
-            setNotice("BACKGROUND ARMING UNAVAILABLE · KEEP APP OPEN");
-          } else if (notificationPermission === "denied") {
-            setNotice("BACKGROUND NAVIGATION ACTIVE · NOTIFICATIONS BLOCKED");
-          }
-        }
-        setForegroundOnly(backgroundMode === "foreground-only");
-
-        await processPersistedBackgroundSamples([toLocationSample(current)]);
-        setSaveReady(true);
-        setBooting(false);
-
-        const watcher = await Location.watchPositionAsync(
-          {
-            // Foreground-only navigation remains playable without continuous
-            // GPS. High accuracy is reserved for the geofence-triggered task.
-            accuracy: Location.Accuracy.Balanced,
-            distanceInterval: 10,
-            timeInterval: 10_000,
-          },
-          (update) => {
-            if (cancelled || livePausedRef.current) return;
-            setPositions((positions) => ({
-              ...positions,
-              live: { latitude: update.coords.latitude, longitude: update.coords.longitude },
-            }));
-            setLocationStatus(`GPS LOCK · ±${Math.round(update.coords.accuracy ?? 0)} M`);
-            void processPersistedForegroundSamples([toLocationSample(update)]);
-          },
-        );
-        if (cancelled || livePausedRef.current) watcher.remove();
-        else locationSubscription.current = watcher;
       } catch {
-        if (cancelled) return;
-        keepLivePaused();
-        setNotice("LIVE LOCATION UNAVAILABLE · TRY AGAIN WHILE SAFELY STOPPED");
+        if (!cancelled) setNotice("LOCAL SAVE UNAVAILABLE");
+      } finally {
+        if (!cancelled) {
+          setSaveReady(true);
+          setBooting(false);
+        }
       }
     }
-    void boot();
-    return () => {
-      cancelled = true;
-      locationSubscription.current?.remove();
-    };
-  }, [initialCampaigns, liveStartAttempt]);
+    void restore();
+    return () => { cancelled = true; };
+  }, [initialCampaigns]);
+
+  const arrivedGeoid = live.presence.geoid;
+  useEffect(() => {
+    if (!saveReady || !arrivedGeoid) return;
+    setCampaigns((current) => updateCampaign(current, "live", (game) => recordSubdivisionVisit(game, arrivedGeoid)));
+  }, [arrivedGeoid, saveReady]);
 
   const liveCampaign = campaigns.live;
   const trainingCampaign = campaigns.training;
   useEffect(() => {
-    if (!saveReady || livePaused || livePausedRef.current) return;
+    if (!saveReady || resetInProgress.current || liveCampaign.discoveredPortIds.length === 0) return;
     void liveSaveQueue.current.schedule(liveCampaign)
       .catch(() => setNotice("SAVE FAILED · LIVE CAMPAIGN REMAINS IN MEMORY"));
-  }, [liveCampaign, livePaused, saveReady]);
+  }, [liveCampaign, saveReady]);
 
   useEffect(() => {
     if (!saveReady || resetInProgress.current || trainingCampaign === emptyTrainingSave.current) return;
@@ -843,13 +544,7 @@ function Wayfarer() {
     const target = resetMode;
     resetInProgress.current = true;
     setResetting(true);
-    if (target === "live") {
-      livePausedRef.current = true;
-      setLivePaused(true);
-      setLocationStatus("LIVE NAVIGATION PAUSED");
-      locationSubscription.current?.remove();
-      locationSubscription.current = null;
-    }
+    if (target === "live") setLiveRequested(false);
     try {
       await (target === "live" ? liveSaveQueue : trainingSaveQueue).current.writeThrough(null);
       setNotice(target === "live" ? "LIVE GAME DATA RESET" : "TRAINING GAME DATA RESET");
@@ -873,7 +568,8 @@ function Wayfarer() {
   }
 
   function mutate(action: (current: GameState) => GameState, success: string) {
-    if (resetInProgress.current || contractSavingRef.current || (mode === "live" && livePausedRef.current)) return;
+    if (resetInProgress.current || contractSavingRef.current) return;
+    if (mode === "live" && !live.currentGeoid()) return;
     try {
       const base = campaignsRef.current[mode];
       const updated = action(base);
@@ -889,19 +585,14 @@ function Wayfarer() {
   }
 
   async function saveContract(action: (current: GameState) => GameState, message: string) {
-    if (contractSavingRef.current || resetInProgress.current || !dockedPort
-      || (mode === "live" && livePausedRef.current)) return;
-    if (mode === "live" && liveProofWrites.current > 0) {
-      setNotice("Docking is being saved. Try the contract again in a moment.");
-      return;
-    }
+    if (mode !== "training" || contractSavingRef.current || resetInProgress.current || !dockedPort) return;
     contractSavingRef.current = true;
     setContractSaving(true);
     try {
       const current = campaignsRef.current[mode];
       if (activeDockedPort(current, coordinator)?.id !== dockedPort.id) return;
       const next = action(current);
-      await (mode === "live" ? liveSaveQueue : trainingSaveQueue).current.writeThrough(next);
+      await trainingSaveQueue.current.writeThrough(next);
       setCampaigns((previous) => ({ ...previous, [mode]: next }));
       setNotice(message);
     } catch (error) {
@@ -937,89 +628,32 @@ function Wayfarer() {
     void Haptics.selectionAsync();
   }
 
-  async function selectPort(portId: string) {
-    if (contractSavingRef.current) return;
+  function plotCourse(portId: string) {
+    if (contractSavingRef.current || mode !== "training") return;
     const port = game.ports.find((candidate) => candidate.id === portId);
     if (!port) return;
-    setSelectedPortIds((current) => ({ ...current, [mode]: portId }));
-    if (mode === "training") {
-      setCoordinators((current) => ({
-        ...current,
-        training: selectDockingTarget(current.training, { id: port.id, coords: port.position }),
-      }));
-    } else {
-      try {
-        if (livePausedRef.current) return;
-        const next = await persistSelectedDockingTarget({ id: port.id, coords: port.position });
-        setCoordinators((current) => ({ ...current, live: next }));
-        if (!foregroundOnly && !livePausedRef.current) {
-          await armSelectedPortGeofence({
-            portId: port.id,
-            latitude: port.position.latitude,
-            longitude: port.position.longitude,
-            radiusMeters: 120,
-          });
-        }
-      } catch {
-        setForegroundOnly(true);
-        setNotice("BACKGROUND ARMING UNAVAILABLE · KEEP APP OPEN");
-      }
-    }
+    setSelectedPortIds((current) => ({ ...current, training: portId }));
+    setCoordinators((current) => ({
+      ...current,
+      training: selectDockingTarget(current.training, { id: port.id, coords: port.position }),
+    }));
     void Haptics.selectionAsync();
-  }
-
-  function plotCourse(portId: string) {
-    if (contractSavingRef.current) return;
-    void selectPort(portId);
     setTab("bridge");
-  }
-
-  async function requestBackgroundAccess() {
-    setShowBackgroundExplanation(false);
-    try {
-      const notificationPermission = await requestBackgroundNotificationAccess();
-      const permissions = await requestBackgroundLocationPermissions();
-      const granted = permissions.background === "granted";
-      setForegroundOnly(!granted);
-      if (livePausedRef.current) return;
-      if (!granted) {
-        setNotice("BACKGROUND PERMISSION DENIED · FOREGROUND ONLY");
-        return;
-      }
-      const liveGame = campaignsRef.current.live;
-      const portId = selectedPortIdsRef.current.live;
-      const port = liveGame.ports.find((candidate) => candidate.id === portId) ?? liveGame.ports[0];
-      await armSelectedPortGeofence({
-        portId: port.id,
-        latitude: port.position.latitude,
-        longitude: port.position.longitude,
-        radiusMeters: 120,
-      });
-      setNotice(notificationPermission === "denied"
-        ? "BACKGROUND NAVIGATION ENABLED · NOTIFICATIONS BLOCKED"
-        : "BACKGROUND NAVIGATION ENABLED");
-    } catch {
-      setForegroundOnly(true);
-      setNotice("BACKGROUND PERMISSION UNAVAILABLE · FOREGROUND ONLY");
-    }
-  }
-
-  function beginBackgroundPermissionRequest() {
-    const androidVersion = typeof Platform.Version === "number"
-      ? Platform.Version
-      : Number.parseInt(String(Platform.Version), 10);
-    if (Platform.OS === "android" && androidVersion >= 30) {
-      setShowBackgroundExplanation(true);
-    } else {
-      void requestBackgroundAccess();
-    }
   }
 
   function executeTrade(quote: MarketQuote, side: "buy" | "sell", quantity: number) {
     if (!dockedPort) return;
+    const order = { portId: dockedPort.id, commodityId: quote.commodityId, side, quantity };
+    if (mode === "live" && live.currentGeoid() !== order.portId) return;
     mutate(
-      (current) => trade(current, { portId: dockedPort.id, commodityId: quote.commodityId, side, quantity }),
-      side === "buy" ? "Cargo loaded. Plot your next course on the chart." : "Sale complete. Check your receipt.",
+      (current) => {
+        if (mode === "training") return trade(current, order);
+        const known = recordSubdivisionVisit(current, order.portId);
+        const traded = trade({ ...known, dockedPortId: order.portId }, order);
+        return { ...traded, dockedPortId: null };
+      },
+      side === "sell" ? "Sale complete. Check your receipt."
+        : mode === "live" ? "Cargo loaded. Your hold travels with you." : "Cargo loaded. Plot your next course on the chart.",
     );
   }
 
@@ -1060,13 +694,11 @@ function Wayfarer() {
             <FlightScene
               vista={berthed ? "docked" : "flight"}
               callsign={selectedPort.callsign}
-              title={selectedPort.name}
-              status={[
-                selectedPort.callsign,
-                selectedCounty?.name,
-                berthed ? "Docked" : mode === "live" && livePaused
-                  ? "Navigation on standby" : "Approach · " + formatDistance(selectedDistance),
-              ].filter(Boolean).join(" · ")}
+              title={mode === "live" && !pilotPort ? "North Coast Live" : selectedPort.name}
+              status={mode === "live"
+                ? pilotPort ? pilotPort.countyName + " · GEOID " + pilotPort.geoid : "Humboldt and Del Norte counties"
+                : [selectedPort.callsign, trainingArea?.kind === "inside" ? trainingArea.port.name : selectedCounty, berthed ? "Docked" : "Approach · " + formatDistance(selectedDistance)]
+                  .filter(Boolean).join(" · ")}
             >
               {berthed ? (
                 <Button label="Enter station market" onPress={() => {
@@ -1076,14 +708,11 @@ function Wayfarer() {
               ) : mode === "training" ? (
                 <Button label="Simulate approach" accessibilityLabel={"Simulate approach to " + selectedPort.name}
                   onPress={simulateQualification} disabled={contractSaving} />
-              ) : livePaused ? (
-                <Button label="Start live navigation" onPress={() => {
-                  setSaveReady(false);
-                  setBooting(true);
+              ) : (
+                <Button label={liveRequested ? "Retry Live navigation" : "Start live navigation"} onPress={() => {
+                  setLiveRequested(true);
                   setLiveStartAttempt((attempt) => attempt + 1);
                 }} />
-              ) : (
-                <Button label="Open star chart" onPress={() => setTab("chart")} tone="ghost" />
               )}
             </FlightScene>
             <View style={styles.pageBody}>
@@ -1093,8 +722,8 @@ function Wayfarer() {
                 <Stat label="Hull" value={game.player.hull + "/" + game.player.maxHull}
                   warning={game.player.hull < game.player.maxHull} />
               </View>
-              {mode === "live" && !livePaused && <DockingStatusCard coordinator={coordinator}
-                foregroundOnly={foregroundOnly} onEnableBackground={beginBackgroundPermissionRequest} />}
+              {mode === "live" && liveRequested && <Button label="Pause Live navigation"
+                onPress={() => setLiveRequested(false)} tone="ghost" />}
               {!berthed && mode === "training" && <Text style={styles.receiptLine}>
                 Training advances the 10-minute docking check without using GPS.
               </Text>}
@@ -1106,6 +735,7 @@ function Wayfarer() {
                 <Switch accessibilityLabel="Training simulator" disabled={contractSaving}
                   onValueChange={(enabled) => {
                     if (contractSavingRef.current) return;
+                    if (enabled) setLiveRequested(false);
                     setMode(enabled ? "training" : "live");
                     setNotice(enabled ? "TRAINING CAMPAIGN ACTIVE · LIVE PROGRESS UNCHANGED" : "LIVE CAMPAIGN ACTIVE");
                   }}
@@ -1113,19 +743,34 @@ function Wayfarer() {
                   trackColor={{ false: COLORS.line, true: COLORS.frame }} value={mode === "training"} />
               </View>
               {mode === "live" && <Text style={styles.testContentNoticeText}>
-                Flight art is fictional. Pilot locations are unavailable. Do not travel to generated test points.
+                Live is a foreground pilot in Humboldt and Del Norte counties. Your subdivision opens its market. Follow local travel rules.
               </Text>}
             </View>
           </>
         )}
 
-        {tab === "chart" && (
+        {tab === "chart" && mode === "live" && (
+          <View style={styles.pageBody}>
+            <SectionHeader title="North Coast Live ports" />
+            <Text style={styles.receiptLine}>TIGER/Line 2025 · 10 Census county subdivisions · foreground pilot</Text>
+            <Text style={styles.receiptLine}>A fresh, accurate fix within a subdivision opens its market. Access pauses near unclear boundaries.</Text>
+            <LiveSubdivisionChart currentGeoid={pilotPort?.geoid} />
+            {PILOT_PORTS.map((port) => (
+              <View key={port.geoid} style={styles.portListRow}>
+                <Text style={styles.commodityName}>{port.name}{pilotPort?.geoid === port.geoid ? " · Present" : ""}</Text>
+                <Text style={styles.commodityMeta}>{port.countyName} · GEOID {port.geoid}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        {tab === "chart" && mode === "training" && (
           <View style={styles.pageBody}>
             <SectionHeader title={regionalTraining ? "North Coast chart" : "Plot a course"} />
             {regionalTraining ? (
               <>
                 <Text style={styles.receiptLine}>Humboldt and Del Norte counties · California</Text>
-                <Text style={styles.receiptLine}>Choose a fictional station from the port list. County membership does not qualify a ship to dock.</Text>
+                <Text style={styles.receiptLine}>Training scenarios use simulated docking. In Live, each Census subdivision is one port.</Text>
                 <TerritoryChart ports={game.ports} ship={position} selectedPort={selectedPort} />
               </>
             ) : (
@@ -1137,14 +782,16 @@ function Wayfarer() {
             )}
             <Pressable accessibilityRole="button" accessibilityState={{ expanded: showPortList }}
               onPress={() => setShowPortList((shown) => !shown)} style={styles.portListRow}>
-              <Text style={styles.commodityName}>Port list · {game.discoveredPortIds.length} of {game.ports.length} visited</Text>
+              <Text style={styles.commodityName}>Scenario list · {game.discoveredPortIds.length} of {game.ports.length} visited</Text>
             </Pressable>
             {showPortList && game.ports.map((port) => {
               const visited = game.discoveredPortIds.includes(port.id);
               const range = formatDistance(distanceMeters(position, port.position));
               const selected = selectedPort.id === port.id;
+              const area = regionalTraining ? locateSubdivision(port.position, 0) : null;
               const county = regionalTraining ? territoryAt(port.position) : null;
-              const description = [visited ? "visited" : "unvisited", county?.name, range].filter(Boolean);
+              const description = [visited ? "visited" : "unvisited", county?.name,
+                area?.kind === "inside" ? area.port.name : null, range].filter(Boolean);
               return (
                 <Pressable accessibilityRole="button" accessibilityState={{ selected }}
                   accessibilityLabel={["Select " + port.name, ...description].join(", ")}
@@ -1156,12 +803,12 @@ function Wayfarer() {
             })}
             <View style={styles.testContentNotice}>
               <Text style={styles.testContentNoticeText}>
-                Public pilot preset unavailable. No physical stations are approved for the North Coast.
+                Training scenarios are fictional. Only official subdivisions are Live ports.
               </Text>
               <Text style={styles.testContentNoticeText}>
                 {regionalTraining
                   ? "County outlines are approximate. Training stations are fictional. Do not travel to these points."
-                  : "This chart shows generated test points. Do not travel to these points."}
+                  : "This legacy Training chart shows simulated scenarios. Do not travel to these points."}
               </Text>
             </View>
             <SectionHeader title="Market transmissions" />
@@ -1195,32 +842,32 @@ function Wayfarer() {
             <View style={styles.pageBody}>
               {dockedPort ? (
                 <View style={styles.counterChoices}>
-                  <Button compact label="Contract desk" accessibilityLabel="Open contract desk"
+                  {mode === "training" && <Button compact label="Contract desk" accessibilityLabel="Open contract desk"
                     selected={stationPanel === "contracts"}
                     tone={stationPanel === "contracts" ? "lime" : "ghost"}
-                    onPress={() => setStationPanel("contracts")} />
+                    onPress={() => setStationPanel("contracts")} />}
                   <Button compact label="Trade counter" accessibilityLabel="Open trade counter"
-                    selected={stationPanel === "trade"}
-                    tone={stationPanel === "trade" ? "lime" : "ghost"}
+                    selected={mode === "live" || stationPanel === "trade"}
+                    tone={mode === "live" || stationPanel === "trade" ? "lime" : "ghost"}
                     onPress={() => setStationPanel("trade")} />
                 </View>
               ) : (
                 <>
-                  <SectionHeader title="Contract log" />
+                  <SectionHeader title={mode === "training" ? "Contract log" : "Live market"} />
                   <Text style={styles.emptyTitle}>Market encrypted</Text>
-                  <Text style={styles.emptyCopy}>Complete docking qualification to access the station and its prices.</Text>
+                  <Text style={styles.emptyCopy}>{mode === "training" ? "Complete simulated docking qualification to access prices." : "Confirm your location within a pilot subdivision to access its market."}</Text>
                   <Button label="Return to bridge" onPress={() => setTab("bridge")} tone="ghost" />
                 </>
               )}
-              {(!dockedPort || stationPanel === "contracts") && (
+              {mode === "training" && (!dockedPort || stationPanel === "contracts") && (
                 <CargoContract game={game} dockedPortId={dockedPort?.id} saving={contractSaving}
                   onAccept={() => { void saveContract(acceptDelivery, "Contract accepted. Buy Ion Fuel at Wayfarer Freeport."); }}
                   onDeliver={() => { void saveContract(completeDelivery, "Delivery complete. Received " + DELIVERY.reward + " cr."); }} />
               )}
-              {(!dockedPort || stationPanel === "trade") && (
+              {(mode === "live" || !dockedPort || stationPanel === "trade") && (
                 <LastTrade game={game} onUpgrades={() => setTab("ship")} />
               )}
-              {dockedPort && stationPanel === "trade" && (
+              {dockedPort && (mode === "live" || stationPanel === "trade") && (
                 <View style={styles.marketPanel}>
                   <SectionHeader title="Trade counter" />
                   {dockedPort.market.map((quote) => (
@@ -1261,7 +908,7 @@ function Wayfarer() {
                       <Text style={styles.upgradeCopy}>{benefit} · {cost} cr</Text>
                       {shortfall > 0 && <Text style={styles.upgradeCopy}>{shortfall} cr short</Text>}
                     </View>
-                    <Button compact disabled={shortfall > 0 || (mode === "live" && livePaused)} label="Install"
+                    <Button compact disabled={shortfall > 0 || (mode === "live" && !dockedPort)} label="Install"
                       accessibilityLabel={`${label}, ${cost} credits`}
                       onPress={() => mutate(
                         (current) => buyUpgrade(current, id),
@@ -1288,9 +935,9 @@ function Wayfarer() {
               <View style={styles.receipt}>
                 <Text style={styles.receiptLine}>
                   Live and Training have separate local saves for ship, cargo, markets, visits, contract and the last receipt.
-                  Live saves include starting and generated port coordinates plus the selected docking target and qualification progress.
-                  New Training saves use fictional stations on the North Coast map. Older Training saves keep their original map.
-                  Raw location readings and movement trails are not saved.
+                  Live saves include visited subdivision IDs and local trade progress. Precise fixes stay in memory.
+                  Older Live progress is retained separately, with ship, credits and cargo carried forward.
+                  Training scenarios and older Training maps keep their separate save.
                 </Text>
                 <Text style={styles.receiptLine}>Android manages app permissions and system backups separately.</Text>
                 <Button label={`Reset ${mode === "live" ? "Live" : "Training"} game data`}
@@ -1340,11 +987,6 @@ function Wayfarer() {
         </ScrollView>
       </Modal>
       <EncounterModal game={game} onResolve={handleEncounter} />
-      <BackgroundPermissionModal
-        onCancel={() => setShowBackgroundExplanation(false)}
-        onContinue={() => { void requestBackgroundAccess(); }}
-        visible={showBackgroundExplanation}
-      />
     </SafeAreaView>
   );
 }

@@ -3,6 +3,15 @@ import { createServer } from "node:http";
 
 const atlas = new URL("../mobile/src/territories/north-coast.json", import.meta.url);
 const territoryGeoJSON = readFileSync(atlas);
+const cousub = new URL("../mobile/src/territories/cousub/", import.meta.url);
+const portCatalog = readFileSync(new URL("catalog.json", cousub));
+const pilot = JSON.parse(readFileSync(new URL("pilot.json", cousub)));
+const boundaries = new Map(pilot.map(({ geoid, name, countyGeoid, countyName }) => [geoid, JSON.stringify({
+  geoid, name, countyGeoid, countyName,
+  encoding: "delta-polyline-lon-lat-1e6",
+  crs: "EPSG:4269",
+  polygons: JSON.parse(readFileSync(new URL(geoid + ".json", cousub))),
+})]));
 const health = JSON.stringify({ status: "ok" });
 const unsupportedQuery = JSON.stringify({ error: "Query parameters are unsupported" });
 const methodNotAllowed = JSON.stringify({ error: "Method not allowed" });
@@ -27,6 +36,10 @@ const server = createServer((req, res) => {
   if (req.url === "/v1/territories") {
     return send(req, res, 200, territoryGeoJSON, "application/geo+json");
   }
+  if (req.url === "/v2/ports") return send(req, res, 200, portCatalog);
+  const portBoundary = /^\/v2\/ports\/(\d{10})\/boundary$/.exec(req.url);
+  const boundary = portBoundary && boundaries.get(portBoundary[1]);
+  if (boundary) return send(req, res, 200, boundary);
   return send(req, res, 404, missing);
 });
 

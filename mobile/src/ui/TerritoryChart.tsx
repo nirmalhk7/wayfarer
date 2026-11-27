@@ -3,6 +3,7 @@ import Svg, { Circle, Line, Path, Text as MapText } from "react-native-svg";
 
 import type { Coordinates, GameState } from "../game/engine";
 import { territories, territoryAt } from "../territories/northCoast";
+import { PILOT_PORTS, subdivisionGeometry } from "../territories/subdivisions";
 import { COCKPIT as COLORS } from "./cockpitTheme";
 
 const WIDTH = 320;
@@ -74,6 +75,42 @@ export function TerritoryChart({ ports, ship, selectedPort }: {
       <Text style={styles.key}>Simulated ship · {shipCounty?.name ?? "Outside mapped counties"}</Text>
       <Text style={styles.key}>Cyan ring marks your ship. Gold marks the selected station.</Text>
       <Text style={styles.key}>U.S. Census Bureau · 2025 · generalized boundaries</Text>
+    </View>
+  );
+}
+
+let livePaths: { geoid: string; path: string }[] | undefined;
+
+export function LiveSubdivisionChart({ currentGeoid }: { currentGeoid?: string }) {
+  livePaths ??= PILOT_PORTS.map(({ geoid }) => ({
+    geoid,
+    path: subdivisionGeometry(geoid).map((polygon) => polygon.map((ring) => {
+      let lastX = 0;
+      let lastY = 0;
+      let path = "";
+      for (const [longitude, latitude] of ring) {
+        const { x, y } = project({ longitude, latitude });
+        // Skip subpixel line segments for painting only. Arrival uses every source point.
+        if (path && Math.hypot(x - lastX, y - lastY) < 0.5) continue;
+        path += (path ? "L" : "M") + x.toFixed(2) + "," + y.toFixed(2);
+        lastX = x;
+        lastY = y;
+      }
+      return path + "Z";
+    }).join(" ")).join(" "),
+  }));
+  return (
+    <View style={styles.frame}>
+      <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.drawing}>
+        <Svg width="100%" height="100%" viewBox={"0 0 " + WIDTH + " " + HEIGHT}>
+          {livePaths.map(({ geoid, path }) => (
+            <Path key={geoid} d={path} fillRule="evenodd"
+              fill={geoid === currentGeoid ? "#765750" : "#273951"}
+              stroke={geoid === currentGeoid ? COLORS.accent : "#a5a6c8"} strokeWidth={1} />
+          ))}
+        </Svg>
+      </View>
+      <Text style={styles.key}>Gold marks your confirmed subdivision. This chart shows no travel routes.</Text>
     </View>
   );
 }
