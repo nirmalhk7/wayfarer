@@ -30,7 +30,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Wayfarer uses your location on this device to open your Census subdivision’s market while the app is in use."
+          "locationWhenInUsePermission": "Wayfarer uses your location on this device to find your port, show nearby ranges, and open the local market while the app is in use."
         }
       ]
     ],

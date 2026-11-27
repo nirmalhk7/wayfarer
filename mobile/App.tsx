@@ -13,7 +13,6 @@ import {
   Text,
   TextInput,
   View,
-  useWindowDimensions,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView, initialWindowMetrics } from "react-native-safe-area-context";
 
@@ -37,14 +36,13 @@ import {
 } from "./src/game/engine";
 import {
   cargoUnits,
-  chartPosition,
   formatDistance,
   rumorSummary,
 } from "./src/game/presentation";
 import { useSubdivisionArrival } from "./src/location/useSubdivisionArrival";
 import { stopLegacyPointTasks } from "./src/location/retiredPointTasks";
 import { createSubdivisionCampaign, recordSubdivisionVisit } from "./src/game/subdivisionCampaign";
-import { locateSubdivision, PILOT_PORTS } from "./src/territories/subdivisions";
+import { locateSubdivision, PILOT_PORTS, subdivisionGeometry } from "./src/territories/subdivisions";
 import {
   LEGACY_STORAGE_KEY,
   LIVE_RESET_MARKER,
@@ -70,7 +68,8 @@ import {
 import { clearPersistedDockingCoordinator } from "./src/ui/dockingSessionStore";
 import { COCKPIT as COLORS } from "./src/ui/cockpitTheme";
 import { FlightScene } from "./src/ui/FlightScene";
-import { LiveSubdivisionChart, TerritoryChart } from "./src/ui/TerritoryChart";
+import { PortCompass, type PortReading } from "./src/ui/PortCompass";
+import { compassDirection, nearestBoundaryPoint, placeName } from "./src/game/compass";
 import { createNorthCoastTraining, NORTH_COAST_ORIGIN, territoryAt, usesNorthCoastTrainingMap } from "./src/territories/northCoast";
 
 async function clearLiveDockingData() {
@@ -80,9 +79,8 @@ async function clearLiveDockingData() {
     AsyncStorage.removeItem(LEGACY_STORAGE_KEY),
   ]);
 }
-const SCOPE_STARS = [[9,18], [28,14], [43,34], [64,12], [89,17], [91,57], [72,63], [18,78], [51,85], [88,88]];
 
-type Tab = "bridge" | "chart" | "market" | "ship";
+type Tab = "bridge" | "compass" | "market" | "ship";
 
 function Button({
   label,
@@ -144,96 +142,6 @@ function BandPill({ band }: { band: PriceBand }) {
       band === "expensive" && styles.bandExpensive,
     ]}>
       <Text style={styles.bandText}>{band.toUpperCase()}</Text>
-    </View>
-  );
-}
-
-function StarChart({
-  game,
-  position,
-  selectedPortId,
-  onSelect,
-  size,
-}: {
-  game: GameState;
-  position: Coordinates;
-  selectedPortId: string;
-  onSelect: (portId: string) => void;
-  size: number;
-}) {
-  const ship = chartPosition(game.origin, position);
-  const target = game.ports.find(({ id }) => id === selectedPortId);
-  const aim = target ? chartPosition(game.origin, target.position) : ship;
-  const dx = (aim.x - ship.x) * size / 100;
-  const dy = (aim.y - ship.y) * size / 100;
-  const vectorLength = Math.hypot(dx, dy);
-  const vectorAngle = Math.atan2(dy, dx) * 180 / Math.PI;
-
-  return (
-    <View accessibilityLabel="Nearby starport chart" style={[styles.radar, { height: size, width: size }]}>
-      {SCOPE_STARS.map(([x, y]) => <View key={x} style={[styles.scopeStar, { left: `${x}%`, top: `${y}%` }]} />)}
-      <Text style={styles.scopeLabel}>Local scope</Text>
-      {vectorLength > 0 && <View pointerEvents="none" style={[styles.scopeVector, {
-        top: `${(aim.y + ship.y) / 2}%`, left: `${(aim.x + ship.x) / 2}%`,
-        width: vectorLength, marginLeft: -vectorLength / 2,
-        transform: [{ rotate: `${vectorAngle}deg` }],
-      }]} />}
-      <View style={[
-        styles.radarRing,
-        {
-          width: size * 0.72,
-          height: size * 0.72,
-          marginLeft: size * -0.36,
-          marginTop: size * -0.36,
-        },
-      ]} />
-      <View style={[
-        styles.radarRing,
-        {
-          width: size * 0.4,
-          height: size * 0.4,
-          marginLeft: size * -0.2,
-          marginTop: size * -0.2,
-        },
-      ]} />
-      <View style={styles.radarAxisHorizontal} />
-      <View style={styles.radarAxisVertical} />
-      <View pointerEvents="none" style={[styles.shipMarker, { left: `${ship.x}%`, top: `${ship.y}%` }]}>
-        <View style={styles.shipPointer} />
-      </View>
-      {game.ports.map((port, index) => {
-        const point = index === 0
-          ? { x: 50, y: 50 }
-          : chartPosition(game.origin, port.position);
-        const selected = port.id === selectedPortId;
-        const visited = game.discoveredPortIds.includes(port.id);
-        return (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${port.name}, ${formatDistance(distanceMeters(position, port.position))}`}
-            accessibilityState={{ selected }}
-            key={port.id}
-            onPress={() => onSelect(port.id)}
-            style={[
-              styles.portNode,
-              {
-                left: `${point.x}%`,
-                top: `${point.y}%`,
-                transform: [{ translateX: -28 }, { translateY: -24 }],
-              },
-            ]}
-          >
-            <View style={[
-              styles.portDiamond,
-              visited && styles.portDiamondVisited,
-              selected && styles.portDiamondSelected,
-            ]} />
-            <Text numberOfLines={1} style={[styles.portNodeLabel, selected && styles.portNodeLabelSelected]}>
-              {port.callsign}
-            </Text>
-          </Pressable>
-        );
-      })}
     </View>
   );
 }
@@ -315,7 +223,7 @@ function CargoContract({ game, dockedPortId, saving, onAccept, onDeliver }: {
         <Text style={styles.receiptLine} accessibilityLiveRegion="polite">{delivery.loaded} / {DELIVERY.quantity} Ion Fuel reserved</Text>
         <Text style={styles.receiptLine}>{delivery.loaded < DELIVERY.quantity
           ? `Buy Ion Fuel at ${route.origin.name}. Your contract fuel is reserved from sale.`
-          : `Select ${route.destination.name} on the chart or port list and dock there to deliver.`}</Text>
+          : `Select ${route.destination.name} on the compass and dock there to deliver.`}</Text>
         <Button label="Deliver reserved cargo" disabled={saving || Boolean(game.encounter)
           || dockedPortId !== route.destination.id || delivery.loaded < DELIVERY.quantity}
           onPress={onDeliver} tone="ghost" />
@@ -336,7 +244,7 @@ function LastTrade({ game, onUpgrades }: { game: GameState; onUpgrades: () => vo
     <View style={styles.receipt}>
       <Text style={styles.receiptTitle} accessibilityRole="header">Last trade receipt</Text>
       <Text style={styles.receiptLine}>
-        {`${receipt.side === "buy" ? "Bought" : "Sold"} ${receipt.quantity} × ${commodity?.name} at ${port?.name}`}
+        {`${receipt.side === "buy" ? "Bought" : "Sold"} ${receipt.quantity} × ${commodity?.name} at ${port ? placeName(port.name) : "port"}`}
       </Text>
       <Text style={styles.receiptLine}>
         {`${receipt.side === "buy" ? "Paid" : "Proceeds"} ${total} cr · ${receipt.unitPrice} cr per unit`}
@@ -397,7 +305,6 @@ export default function App() {
 }
 
 function Wayfarer() {
-  const { width } = useWindowDimensions();
   const initialCampaigns = useMemo<Campaigns>(() => ({
     live: createSubdivisionCampaign(),
     training: createNorthCoastTraining(),
@@ -418,7 +325,6 @@ function Wayfarer() {
   });
   const [tab, setTab] = useState<Tab>("bridge");
   const [stationPanel, setStationPanel] = useState<"contracts" | "trade">("contracts");
-  const [showPortList, setShowPortList] = useState(false);
   const [booting, setBooting] = useState(true);
   const [saveReady, setSaveReady] = useState(false);
   const [liveRequested, setLiveRequested] = useState(false);
@@ -465,11 +371,37 @@ function Wayfarer() {
   const berthed = dockedPort?.id === selectedPort.id;
   const regionalTraining = mode === "training" && usesNorthCoastTrainingMap(game);
   const trainingArea = regionalTraining ? locateSubdivision(selectedPort.position, 0) : null;
-  const selectedCounty = trainingArea?.kind === "inside" ? trainingArea.port.countyName
-    : regionalTraining ? territoryAt(selectedPort.position)?.name : pilotPort?.countyName;
+  const trainingPlace = trainingArea?.kind === "inside" ? trainingArea.port.name
+    : regionalTraining ? territoryAt(selectedPort.position)?.name : undefined;
   const selectedDistance = distanceMeters(position, selectedPort.position);
   const usedCargo = cargoUnits(game.player.cargo);
-  const radarSize = Math.min(width - 40, 440);
+  const compassPosition = mode === "live" ? live.compassPosition : position;
+  const currentPortId = compassPosition ? dockedPort?.id : undefined;
+  const visitedIds = mode === "training" ? game.discoveredPortIds : undefined;
+  const compassReadings = useMemo<PortReading[]>(() => {
+    if (tab !== "compass") return [];
+    if (mode === "training") {
+      return game.ports.map((port) => ({
+        id: port.id,
+        name: port.name,
+        detail: visitedIds?.includes(port.id) ? "visited" : "unvisited",
+        direction: compassPosition && compassDirection(compassPosition, port.position),
+      }));
+    }
+    return PILOT_PORTS.map((port) => {
+      const current = port.geoid === currentPortId;
+      return {
+        id: port.geoid,
+        name: placeName(port.name),
+        current,
+        direction: compassPosition && !current
+          ? compassDirection(compassPosition, nearestBoundaryPoint(compassPosition, subdivisionGeometry(port.geoid)))
+          : undefined,
+      };
+    }).sort((a, b) => Number(b.current) - Number(a.current)
+      || (a.direction?.meters ?? Infinity) - (b.direction?.meters ?? Infinity)
+      || a.name.localeCompare(b.name));
+  }, [tab, mode, game.ports, visitedIds, compassPosition, currentPortId]);
   useEffect(() => {
     const back = BackHandler.addEventListener("hardwareBackPress", () => {
       if (tab === "bridge") return false;
@@ -653,7 +585,7 @@ function Wayfarer() {
         return { ...traded, dockedPortId: null };
       },
       side === "sell" ? "Sale complete. Check your receipt."
-        : mode === "live" ? "Cargo loaded. Your hold travels with you." : "Cargo loaded. Plot your next course on the chart.",
+        : mode === "live" ? "Cargo loaded. Your hold travels with you." : "Cargo loaded. Choose your next stop on the compass.",
     );
   }
 
@@ -667,7 +599,7 @@ function Wayfarer() {
         <StatusBar style="light" />
         <View style={styles.bootMark}><Text style={styles.bootMarkText}>W</Text></View>
         <Text style={styles.bootTitle}>WAYFARER</Text>
-        <Text style={styles.bootSubtitle}>TRADE THE CITY · CHART THE UNKNOWN</Text>
+        <Text style={styles.bootSubtitle}>TRADE THE COAST · FIND YOUR PORT</Text>
         <ActivityIndicator color={COLORS.accent} size="small" style={styles.bootSpinner} />
         <Text style={styles.bootStatus}>{locationStatus}</Text>
       </SafeAreaView>
@@ -694,10 +626,10 @@ function Wayfarer() {
             <FlightScene
               vista={berthed ? "docked" : "flight"}
               callsign={selectedPort.callsign}
-              title={mode === "live" && !pilotPort ? "North Coast Live" : selectedPort.name}
+              title={mode === "live" && !pilotPort ? "North Coast Live" : placeName(selectedPort.name)}
               status={mode === "live"
-                ? pilotPort ? pilotPort.countyName + " · GEOID " + pilotPort.geoid : "Humboldt and Del Norte counties"
-                : [selectedPort.callsign, trainingArea?.kind === "inside" ? trainingArea.port.name : selectedCounty, berthed ? "Docked" : "Approach · " + formatDistance(selectedDistance)]
+                ? pilotPort ? placeName(pilotPort.countyName) + " · Current port" : "Humboldt and Del Norte"
+                : [selectedPort.callsign, trainingPlace ? placeName(trainingPlace) : null, berthed ? "Docked" : "Approach · " + formatDistance(selectedDistance)]
                   .filter(Boolean).join(" · ")}
             >
               {berthed ? (
@@ -743,74 +675,36 @@ function Wayfarer() {
                   trackColor={{ false: COLORS.line, true: COLORS.frame }} value={mode === "training"} />
               </View>
               {mode === "live" && <Text style={styles.testContentNoticeText}>
-                Live is a foreground pilot in Humboldt and Del Norte counties. Your subdivision opens its market. Follow local travel rules.
+                Live uses your location on this device to find your port, show nearby ranges, and open the local market.
               </Text>}
             </View>
           </>
         )}
 
-        {tab === "chart" && mode === "live" && (
+        {tab === "compass" && (
           <View style={styles.pageBody}>
-            <SectionHeader title="North Coast Live ports" />
-            <Text style={styles.receiptLine}>TIGER/Line 2025 · 10 Census county subdivisions · foreground pilot</Text>
-            <Text style={styles.receiptLine}>A fresh, accurate fix within a subdivision opens its market. Access pauses near unclear boundaries.</Text>
-            <LiveSubdivisionChart currentGeoid={pilotPort?.geoid} />
-            {PILOT_PORTS.map((port) => (
-              <View key={port.geoid} style={styles.portListRow}>
-                <Text style={styles.commodityName}>{port.name}{pilotPort?.geoid === port.geoid ? " · Present" : ""}</Text>
-                <Text style={styles.commodityMeta}>{port.countyName} · GEOID {port.geoid}</Text>
-              </View>
-            ))}
+            <SectionHeader title="Compass" />
+            <Text style={styles.receiptLine}>
+              {mode === "live" ? "Straight-line range to the nearest edge of each port."
+                : "Straight-line range from your simulated ship to each scenario."}
+            </Text>
+            <Text style={styles.receiptLine}>
+              {mode === "live" ? "Bearings use true north and give no travel directions."
+                : "Choose a scenario to simulate the approach. Do not travel to these points."}
+            </Text>
+            {mode === "live" && !compassPosition && <Text style={styles.receiptLine}>
+              Port ranges are unavailable until you have a fresh, accurate location fix.
+            </Text>}
+            {mode === "training" && <Text style={styles.receiptLine}>
+              {game.discoveredPortIds.length} of {game.ports.length} scenarios visited
+            </Text>}
+            <PortCompass readings={compassReadings} selectedId={mode === "training" ? selectedPort.id : undefined}
+              onSelect={mode === "training" ? plotCourse : undefined} />
           </View>
         )}
 
-        {tab === "chart" && mode === "training" && (
+        {tab === "compass" && mode === "training" && (
           <View style={styles.pageBody}>
-            <SectionHeader title={regionalTraining ? "North Coast chart" : "Plot a course"} />
-            {regionalTraining ? (
-              <>
-                <Text style={styles.receiptLine}>Humboldt and Del Norte counties · California</Text>
-                <Text style={styles.receiptLine}>Training scenarios use simulated docking. In Live, each Census subdivision is one port.</Text>
-                <TerritoryChart ports={game.ports} ship={position} selectedPort={selectedPort} />
-              </>
-            ) : (
-              <>
-                <Text style={styles.receiptLine}>Select a starport to return to the bridge on its approach.</Text>
-                <StarChart game={game} position={position} selectedPortId={selectedPort.id}
-                  onSelect={plotCourse} size={radarSize} />
-              </>
-            )}
-            <Pressable accessibilityRole="button" accessibilityState={{ expanded: showPortList }}
-              onPress={() => setShowPortList((shown) => !shown)} style={styles.portListRow}>
-              <Text style={styles.commodityName}>Scenario list · {game.discoveredPortIds.length} of {game.ports.length} visited</Text>
-            </Pressable>
-            {showPortList && game.ports.map((port) => {
-              const visited = game.discoveredPortIds.includes(port.id);
-              const range = formatDistance(distanceMeters(position, port.position));
-              const selected = selectedPort.id === port.id;
-              const area = regionalTraining ? locateSubdivision(port.position, 0) : null;
-              const county = regionalTraining ? territoryAt(port.position) : null;
-              const description = [visited ? "visited" : "unvisited", county?.name,
-                area?.kind === "inside" ? area.port.name : null, range].filter(Boolean);
-              return (
-                <Pressable accessibilityRole="button" accessibilityState={{ selected }}
-                  accessibilityLabel={["Select " + port.name, ...description].join(", ")}
-                  key={port.id} onPress={() => plotCourse(port.id)} style={styles.portListRow}>
-                  <Text style={[styles.commodityName, selected && styles.limeText]}>{port.name}</Text>
-                  <Text style={styles.commodityMeta}>{description.join(" · ")}</Text>
-                </Pressable>
-              );
-            })}
-            <View style={styles.testContentNotice}>
-              <Text style={styles.testContentNoticeText}>
-                Training scenarios are fictional. Only official subdivisions are Live ports.
-              </Text>
-              <Text style={styles.testContentNoticeText}>
-                {regionalTraining
-                  ? "County outlines are approximate. Training stations are fictional. Do not travel to these points."
-                  : "This legacy Training chart shows simulated scenarios. Do not travel to these points."}
-              </Text>
-            </View>
             <SectionHeader title="Market transmissions" />
             {getRumors(game, selectedPort.id).slice(0, 3).map((rumor) => (
               <View key={rumor.commodityId} style={styles.rumorRow}>
@@ -837,7 +731,7 @@ function Wayfarer() {
 
         {tab === "market" && (
           <>
-            {dockedPort && <FlightScene vista="market" title={dockedPort.name}
+            {dockedPort && <FlightScene vista="market" title={placeName(dockedPort.name)}
               status={"Concourse · " + game.player.credits + " CR available"} />}
             <View style={styles.pageBody}>
               {dockedPort ? (
@@ -855,7 +749,7 @@ function Wayfarer() {
                 <>
                   <SectionHeader title={mode === "training" ? "Contract log" : "Live market"} />
                   <Text style={styles.emptyTitle}>Market encrypted</Text>
-                  <Text style={styles.emptyCopy}>{mode === "training" ? "Complete simulated docking qualification to access prices." : "Confirm your location within a pilot subdivision to access its market."}</Text>
+                  <Text style={styles.emptyCopy}>{mode === "training" ? "Complete simulated docking qualification to access prices." : "Confirm that you are inside a Live port to access its market."}</Text>
                   <Button label="Return to bridge" onPress={() => setTab("bridge")} tone="ghost" />
                 </>
               )}
@@ -935,9 +829,9 @@ function Wayfarer() {
               <View style={styles.receipt}>
                 <Text style={styles.receiptLine}>
                   Live and Training have separate local saves for ship, cargo, markets, visits, contract and the last receipt.
-                  Live saves include visited subdivision IDs and local trade progress. Precise fixes stay in memory.
+                  Live saves remember visited ports and trades. Precise location fixes stay in memory.
                   Older Live progress is retained separately, with ship, credits and cargo carried forward.
-                  Training scenarios and older Training maps keep their separate save.
+                  Training keeps its own save, including older scenarios.
                 </Text>
                 <Text style={styles.receiptLine}>Android manages app permissions and system backups separately.</Text>
                 <Button label={`Reset ${mode === "live" ? "Live" : "Training"} game data`}
@@ -954,7 +848,7 @@ function Wayfarer() {
       <View style={styles.tabBar}>
         {([
           ["bridge", "Bridge"],
-          ["chart", "Chart"],
+          ["compass", "Compass"],
           ["market", "Station"],
           ["ship", "Hold"],
         ] as const).map(([key, label]) => (
@@ -998,10 +892,6 @@ const styles = StyleSheet.create({
   stowage: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginBottom: 16 },
   stowageSlot: { width: 17, height: 19, borderWidth: 1, borderColor: COLORS.frame, borderRadius: 2 },
   stowageOccupied: { backgroundColor: COLORS.accent, borderColor: COLORS.accent },
-  scopeLabel: { position: "absolute", left: 8, top: 7, fontSize: 10, color: COLORS.muted },
-  scopeStar: { position: "absolute", width: 2, height: 2, backgroundColor: "#91afc8", borderRadius: 1 },
-  scopeVector: { position: "absolute", height: 1, backgroundColor: "#ac855c" },
-  shipPointer: { width: 0, height: 0, borderLeftWidth: 7, borderRightWidth: 7, borderBottomWidth: 15, borderLeftColor: "transparent", borderRightColor: "transparent", borderBottomColor: COLORS.signal },
   contract: { backgroundColor: COLORS.contract, borderStyle: "dashed", borderColor: "#80664e" },
   contractHeading: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 },
   contractReward: { color: COLORS.accent, fontSize: 12, fontVariant: ["tabular-nums"] },
@@ -1024,22 +914,10 @@ const styles = StyleSheet.create({
   warning: { color: COLORS.alert },
   noticeBar: { paddingHorizontal: 20, paddingVertical: 8, borderTopWidth: 1, borderColor: COLORS.line },
   noticeText: { color: COLORS.signal, fontSize: 12, lineHeight: 17 },
-  testContentNotice: { paddingVertical: 12, gap: 5 },
   testContentNoticeText: { color: COLORS.text, fontSize: 12, lineHeight: 18 },
   scrollContent: { width: "100%", maxWidth: 680, alignSelf: "center", paddingBottom: 22 },
   sectionTitle: { color: COLORS.text, fontFamily: "serif", fontSize: 25, fontWeight: "700", marginTop: 8, marginBottom: 8 },
   panel: { borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel, padding: 12, marginBottom: 16 },
-  radar: { alignSelf: "center", overflow: "hidden", backgroundColor: COLORS.deep, borderWidth: 1, borderColor: COLORS.line, marginTop: 12, marginBottom: 12 },
-  radarRing: { position: "absolute", left: "50%", top: "50%", borderRadius: 999, borderWidth: 1, borderColor: "#466178" },
-  radarAxisHorizontal: { position: "absolute", top: "50%", left: 12, right: 12, height: 1, backgroundColor: "#31465b" },
-  radarAxisVertical: { position: "absolute", left: "50%", top: 12, bottom: 12, width: 1, backgroundColor: "#31465b" },
-  shipMarker: { position: "absolute", zIndex: 2, width: 24, height: 24, marginLeft: -12, marginTop: -12, alignItems: "center", justifyContent: "center" },
-  portNode: { position: "absolute", zIndex: 3, width: 56, minHeight: 48, alignItems: "center", justifyContent: "center" },
-  portDiamond: { width: 10, height: 10, borderWidth: 1, borderColor: COLORS.signal, backgroundColor: COLORS.deep, transform: [{ rotate: "45deg" }] },
-  portDiamondVisited: { backgroundColor: COLORS.signal },
-  portDiamondSelected: { width: 13, height: 13, borderColor: COLORS.accent, backgroundColor: COLORS.accent },
-  portNodeLabel: { color: COLORS.muted, backgroundColor: COLORS.deep, fontSize: 10, marginTop: 5, fontWeight: "700" },
-  portNodeLabelSelected: { color: COLORS.accent },
   limeText: { color: COLORS.accent },
   rumorRow: { minHeight: 35, flexDirection: "row", alignItems: "center", gap: 8 },
   rumorText: { flexShrink: 1, color: COLORS.muted, fontSize: 13, lineHeight: 19 },
@@ -1071,7 +949,6 @@ const styles = StyleSheet.create({
   commodityMeta: { color: COLORS.muted, fontSize: 12, marginTop: 4 },
   tradeButtons: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: 8 },
   orderQuantity: { minWidth: 54, minHeight: 48, color: COLORS.text, borderWidth: 1, borderColor: COLORS.line, paddingHorizontal: 8 },
-  portListRow: { minHeight: 48, justifyContent: "center", borderTopWidth: 1, borderColor: COLORS.line, paddingVertical: 8 },
   receipt: { gap: 7, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: COLORS.line, backgroundColor: COLORS.panel },
   receiptTitle: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
   receiptLine: { color: COLORS.muted, fontSize: 13, lineHeight: 19 },

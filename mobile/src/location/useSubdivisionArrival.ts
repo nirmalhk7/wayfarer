@@ -2,15 +2,17 @@ import * as Location from "expo-location";
 import { useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
+import { placeName } from "../game/compass";
+import type { Coordinates } from "../game/engine";
 import { assessObservation, FIX_MAX_AGE_MS } from "../territories/subdivisions";
 
 const waiting = "Waiting for a fresh location fix";
-type Presence = { geoid: string | null; validUntil: number; status: string };
+type Presence = { geoid: string | null; validUntil: number; status: string; position?: Coordinates };
 const paused: Presence = { geoid: null, validUntil: 0, status: "Live navigation paused" };
 const status = {
   stale: "Location fix expired",
   poor: "Location accuracy is too low",
-  border: "Near a subdivision boundary. Market access paused.",
+  border: "Near a port boundary. Market access paused.",
   outside: "Outside the North Coast Live pilot",
 };
 
@@ -36,7 +38,7 @@ export function useSubdivisionArrival(enabled: boolean, attempt: number) {
       clearTimeout(expiry);
       current.current = next;
       setPresence(next);
-      if (next.geoid) {
+      if (next.position) {
         expiry = setTimeout(() => publish({ ...paused, status: status.stale }), Math.max(0, next.validUntil - Date.now()));
       }
     }
@@ -65,9 +67,17 @@ export function useSubdivisionArrival(enabled: boolean, attempt: number) {
           accuracy: fix.coords.accuracy,
           mocked: fix.mocked,
         }, now);
-        publish(result.kind === "inside"
-          ? { geoid: result.port.geoid, validUntil: fix.timestamp + FIX_MAX_AGE_MS, status: "Arrived in " + result.port.name }
-          : { ...paused, status: status[result.kind] });
+        if (result.kind === "stale" || result.kind === "poor") {
+          publish({ ...paused, status: status[result.kind] });
+          return;
+        }
+        // A usable measurement powers the compass even when it grants no market access.
+        publish({
+          geoid: result.kind === "inside" ? result.port.geoid : null,
+          validUntil: fix.timestamp + FIX_MAX_AGE_MS,
+          position: { latitude: fix.coords.latitude, longitude: fix.coords.longitude },
+          status: result.kind === "inside" ? "Arrived in " + placeName(result.port.name) : status[result.kind],
+        });
       };
       try {
         const permission = request
@@ -109,6 +119,7 @@ export function useSubdivisionArrival(enabled: boolean, attempt: number) {
 
   return {
     presence: enabled ? presence : paused,
+    compassPosition: enabled && Date.now() < presence.validUntil ? presence.position : undefined,
     currentGeoid: () => enabled && Date.now() < current.current.validUntil ? current.current.geoid : null,
   };
 }

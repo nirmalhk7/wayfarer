@@ -53,7 +53,14 @@ function press(name: string | RegExp) {
   return fireEvent.press(screen.getByRole("button", { name }));
 }
 
-function tab(name: "Bridge" | "Chart" | "Station" | "Hold") {
+function expectPlainPortLanguage() {
+  const administrative = /\b(?:census|tiger|subdivisions?|geoids?|cousub|fips|ccd|county|counties|chart|map)\b|\b06\d{8}\b/iu;
+  expect(screen.queryAllByText(administrative, { includeHiddenElements: true })).toHaveLength(0);
+  expect(screen.queryAllByLabelText(administrative, { includeHiddenElements: true })).toHaveLength(0);
+  expect(screen.queryByRole("tab", { name: /chart|map/i })).toBeNull();
+}
+
+function tab(name: "Bridge" | "Compass" | "Station" | "Hold") {
   return fireEvent.press(screen.getByRole("tab", { name }));
 }
 
@@ -101,9 +108,8 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   expect(screen.getByRole("button", { name: "Buy Ion Fuel" }).props.accessibilityState.disabled).toBe(true);
   await order("Buy", "Ion Fuel", 8);
   expect(screen.getByText("Paid 296 cr · 37 cr per unit")).toBeTruthy();
-  await tab("Chart");
+  await tab("Compass");
   const target = /^Select Vela Outpost, unvisited/;
-  await press("Scenario list · 1 of 7 visited");
   await press(target);
   expect(screen.getByRole("tab", { name: "Bridge" }).props.accessibilityState.selected).toBe(true);
   expect(screen.getByRole("header", { name: "Vela Outpost" })).toBeTruthy();
@@ -114,9 +120,9 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   await tab("Bridge");
   await press("Simulate approach to Vela Outpost");
   expect(screen.getByTestId("vista-docked")).toBeTruthy();
-  await tab("Chart");
+  await tab("Compass");
   expect(screen.getByRole("button", { name: /^Select Vela Outpost, visited/ })).toBeTruthy();
-  expect(screen.getByText("Scenario list · 2 of 7 visited")).toBeTruthy();
+  expect(screen.getByText("2 of 7 scenarios visited")).toBeTruthy();
 
   await tab("Station");
   await order("Sell", "Ion Fuel", 8);
@@ -226,7 +232,7 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   });
   jest.mocked(Location.watchPositionAsync).mockResolvedValueOnce({ remove() {} });
   await press("Start live navigation");
-  await screen.findByRole("header", { name: "Eureka CCD" });
+  await screen.findByRole("header", { name: "Eureka" });
   await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds).toEqual(["0602390930"]));
   expect((await campaign("live"))?.player.credits).toBe(900);
   expect(await AsyncStorage.getItem(storageKeyForMode("training"))).toBe(trainingAfter);
@@ -241,12 +247,12 @@ test("the registered app fulfils the local contract once across failed save, ret
   const gpsReads = jest.mocked(Location.getCurrentPositionAsync).mock.calls.length;
   const mounted = await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
-  await tab("Chart");
-  expect(screen.getByRole("header", { name: "North Coast chart" })).toBeTruthy();
-  expect(screen.getByText(/Humboldt and Del Norte counties/)).toBeTruthy();
-  expect(screen.getByText("Simulated ship · Humboldt County")).toBeTruthy();
-  expect(screen.getByText(/In Live, each Census subdivision is one port/)).toBeTruthy();
-  expect(screen.getByText(/Only official subdivisions are Live ports/)).toBeTruthy();
+  await tab("Compass");
+  expect(screen.getByRole("header", { name: "Compass" })).toBeTruthy();
+  expect(screen.getByTestId("port-compass")).toBeTruthy();
+  expect(screen.getByText("Straight-line range from your simulated ship to each scenario.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /^Select Cinder Exchange, unvisited, .* km · .* true/ })).toBeTruthy();
+  expectPlainPortLanguage();
   expect(screen.getByText(/Do not travel to these points/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /enable public pilot/i })).toBeNull();
   await tab("Bridge");
@@ -274,9 +280,8 @@ test("the registered app fulfils the local contract once across failed save, ret
   await tab("Station");
   expect(screen.getByText("2 / 2 Ion Fuel reserved")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Deliver reserved cargo" }).props.accessibilityState.disabled).toBe(true);
-  await tab("Chart");
-  await press("Scenario list · 1 of 7 visited");
-  await press(/^Select Cinder Exchange, unvisited, Del Norte County/);
+  await tab("Compass");
+  await press(/^Select Cinder Exchange, unvisited, .* (m|km) · .* true/);
   expect(screen.getByTestId("vista-flight")).toBeTruthy();
   expect(screen.getByText(/CND-04 · .* · Approach/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Enter station market" })).toBeNull();
@@ -322,20 +327,24 @@ test("the registered app fulfils the local contract once across failed save, ret
   expect(animated.mock.calls.some(([, config]) => config.duration === 270)).toBe(false);
 });
 
-test("the atlas starts without permission and an explicit denied Live start preserves a Training berth", async () => {
+test("Training starts without permission and an explicit denied Live start preserves a Training berth", async () => {
   const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
   const permissionCalls = jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls.length;
   const reads = jest.mocked(Location.getCurrentPositionAsync).mock.calls.length;
   await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
-  expect(screen.getByText(/WFR-00 · Arcata CCD · Approach/)).toBeTruthy();
+  expect(screen.getByText(/WFR-00 · Arcata · Approach/)).toBeTruthy();
   await press("Simulate approach to Wayfarer Freeport");
   await press("PAY");
-  expect(screen.getByText(/WFR-00 · Arcata CCD · Docked/)).toBeTruthy();
+  expect(screen.getByText(/WFR-00 · Arcata · Docked/)).toBeTruthy();
   await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", false);
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls);
   await press("Start live navigation");
   await screen.findByText("Location permission denied");
+  await tab("Compass");
+  expect(screen.getAllByText("Range unavailable")).toHaveLength(10);
+  expectPlainPortLanguage();
+  await tab("Bridge");
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls + 1);
   expect(jest.mocked(Location.getCurrentPositionAsync).mock.calls).toHaveLength(reads);
   await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", true);
@@ -374,8 +383,23 @@ test("Live switches markets at the GEOID boundary within Humboldt without geofen
   const mounted = await render(<RegisteredApp />);
   const training = await screen.findByRole("switch", { name: "Training simulator" });
   await fireEvent(training, "valueChange", false);
+  await tab("Compass");
+  expect(screen.getByTestId("port-compass")).toBeTruthy();
+  expect(screen.getAllByText("Range unavailable")).toHaveLength(10);
+  expect(screen.queryByText("Current port")).toBeNull();
+  expectPlainPortLanguage();
+  await tab("Bridge");
   await press("Start live navigation");
-  await screen.findByRole("header", { name: "Eureka CCD" });
+  await screen.findByRole("header", { name: "Eureka" });
+  expect(screen.getByText("Arrived in Eureka")).toBeTruthy();
+  expectPlainPortLanguage();
+  await tab("Compass");
+  expect(screen.getByText("Current port")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Arcata, 8.0 km · North 10° true" })).toBeTruthy();
+  await press("Arcata, 8.0 km · North 10° true");
+  expect(screen.getByText("Arcata · 8.0 km · North 10° true")).toBeTruthy();
+  expectPlainPortLanguage();
+  await tab("Bridge");
   await press("Enter station market");
   await order("Buy", "Ion Fuel", 1);
   await waitFor(async () => expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1));
@@ -383,13 +407,23 @@ test("Live switches markets at the GEOID boundary within Humboldt without geofen
   expect(first.player.credits).toBeLessThan(1042);
   expect(first.discoveredPortIds).toEqual(["0602390930"]);
   expect(first.dockedPortId).toBeNull();
+  expect(screen.getByText("Bought 1 × Ion Fuel at Eureka")).toBeTruthy();
+  expectPlainPortLanguage();
 
   expect(listener).toBeDefined();
   await act(async () => listener!(fix(eureka))); // Duplicate timestamp.
   now += 1_000;
-  await act(async () => listener!(fix({ ...eureka, latitude: eureka.latitude + .0001 })));
-  expect(screen.getByRole("header", { name: "Eureka CCD" })).toBeTruthy();
+  const movedWithinEureka = { latitude: 40.719421, longitude: -124.104808 };
+  await act(async () => listener!(fix(movedWithinEureka)));
+  expect(screen.getByRole("header", { name: "Eureka" })).toBeTruthy();
   expect(await campaign("live")).toEqual(first);
+  const saved = await AsyncStorage.getItem(SUBDIVISION_LIVE_STORAGE_KEY);
+  expect(saved).not.toContain(String(movedWithinEureka.latitude));
+  expect(saved).not.toContain(String(movedWithinEureka.longitude));
+  await tab("Compass");
+  expect(screen.getByRole("button", { name: "Arcata, 7.5 km · North 14° true" })).toBeTruthy();
+  expect(screen.getByText("Current port")).toBeTruthy();
+  await tab("Station");
 
   for (const longitude of [border.longitude - .00009, border.longitude + .00009]) {
     now += 1_000;
@@ -398,23 +432,38 @@ test("Live switches markets at the GEOID boundary within Humboldt without geofen
     expect(screen.queryByRole("button", { name: /^Buy Ion Fuel/ })).toBeNull();
   }
   expect(await campaign("live")).toEqual(first);
+  await tab("Compass");
+  expect(screen.getByText("Near a port boundary. Market access paused.")).toBeTruthy();
+  expect(screen.queryByText("Current port")).toBeNull();
+  expect(screen.getByRole("button", { name: /^Arcata, .* true$/ })).toBeTruthy();
+  expectPlainPortLanguage();
+  await tab("Station");
 
   now += 1_000;
   await act(async () => listener!(fix(arcata)));
-  await screen.findByRole("header", { name: "Arcata CCD" });
+  await screen.findByRole("header", { name: "Arcata" });
   expect(screen.getByRole("button", { name: /^Buy Ion Fuel/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /simulate approach/i })).toBeNull();
   await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds)
     .toEqual(["0602390930", "0602390100"]));
-  await tab("Chart");
-  expect(screen.getByText("Humboldt County · GEOID 0602390100")).toBeTruthy();
-  expect(screen.getByText("Arcata CCD · Present")).toBeTruthy();
+  await tab("Compass");
+  expect(screen.getByText("Current port")).toBeTruthy();
+  expect(screen.getByText("Arcata")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Eureka, 6.4 km · West 250° true" })).toBeTruthy();
+  expectPlainPortLanguage();
   await tab("Station");
   const crossingTime = now;
   now += 31_000;
   await act(async () => listener!(fix(arcata, crossingTime + 1)));
   expect(screen.getByText("Market encrypted")).toBeTruthy();
   expect(screen.getByText("Location fix expired")).toBeTruthy();
+  await tab("Compass");
+  expect(screen.getAllByText("Range unavailable")).toHaveLength(10);
+  expect(screen.queryByText("Current port")).toBeNull();
+  expect(screen.queryByRole("button", { name: /true$/ })).toBeNull();
+  expectPlainPortLanguage();
+  await tab("Hold");
+  expectPlainPortLanguage();
   expect(await AsyncStorage.getItem(storageKeyForMode("live"))).toEqual(archive);
   expect(network).not.toHaveBeenCalled();
 

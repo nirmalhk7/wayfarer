@@ -2,7 +2,7 @@
 
 Wayfarer is an Android space-trading game. In U.S. Live play, **one port is one official Census county subdivision (COUSUB)**. The full ten-digit GEOID identifies its market, including the five-digit parent county GEOID. Crossing into another subdivision opens that port’s market once your phone confirms where you are, even within the same county.
 
-The pinned 2025 TIGER/Line shapefile gives the backend an index of all 404 California county subdivisions. Android Live play is a foreground pilot for ten subdivisions in Humboldt and Del Norte counties. This coverage has been replayed with synthetic fixes. Physical field verification remains pending. The app shows boundary outlines and does not provide travel directions.
+The pinned 2025 TIGER/Line shapefile gives the backend an index of all 404 California county subdivisions. Android Live play is a foreground pilot for ten subdivisions in Humboldt and Del Norte counties. This coverage has been replayed with synthetic fixes. Physical field verification remains pending. The app’s compass shows straight-line ranges to nearby ports and gives no travel directions.
 
 Training opens offline and preserves its existing shipping, trade and upgrade scenarios. Its fictional scenarios use simulated approaches and keep a separate save.
 
