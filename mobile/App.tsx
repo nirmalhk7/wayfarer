@@ -50,6 +50,7 @@ import {
   SUBDIVISION_LIVE_STORAGE_KEY,
   COUNTY_LIVE_STORAGE_KEY,
   decodeGameState,
+  restoreTrainingGame,
   encodeGameState,
   storageKeyForMode,
   type CampaignMode,
@@ -411,7 +412,7 @@ function Wayfarer() {
           ?? decodeGameState(oldLiveRaw ?? legacyRaw, "live");
         const nextLive = decodeGameState(countyRaw, "county-live")
           ?? (previous ? createCountyCampaign(previous) : initialCampaigns.live);
-        const nextTraining = decodeGameState(trainingRaw, "training") ?? initialCampaigns.training;
+        const nextTraining = restoreTrainingGame(trainingRaw) ?? initialCampaigns.training;
         setCampaigns({ live: nextLive, training: nextTraining });
         setTrainingPosition(nextTraining.origin);
         setCoordinator(createDockingCoordinator({ id: nextTraining.ports[0].id, coords: nextTraining.origin }));

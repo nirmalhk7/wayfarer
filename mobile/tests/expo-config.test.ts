@@ -11,11 +11,13 @@ test("resolved Android config uses foreground permission with plain port languag
   );
   const config = JSON.parse(output) as {
     platforms?: string[];
-    android?: { permissions?: string[]; blockedPermissions?: string[] };
+    android?: { allowBackup?: boolean; permissions?: string[]; blockedPermissions?: string[] };
     plugins?: (string | [string, { locationWhenInUsePermission?: string }])[];
   };
 
   assert.deepEqual(config.platforms, ["android"]);
+  assert.equal(config.android?.allowBackup, false);
+  assert.ok(config.plugins?.includes("./plugins/withAndroidDataExtractionRules.cjs"));
   assert.ok(config.android?.permissions?.includes("ACCESS_FINE_LOCATION"));
   assert.ok(config.android?.blockedPermissions?.includes("android.permission.ACCESS_BACKGROUND_LOCATION"));
   assert.ok(!config.android?.permissions?.includes("ACCESS_BACKGROUND_LOCATION"));

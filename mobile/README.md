@@ -9,6 +9,11 @@ Training opens offline with its own save. Simulate arrivals, trade, deliver
 contracts and upgrade your ship. To enable Live on a new build, see the
 [atlas hosting and replay guide](../docs/pilot-quickstart.md).
 
+Android disables app backup and excludes databases and shared preferences from
+cloud backup and device transfer. When Training opens an old procedural save,
+it replaces the old coordinates with a fixed simulated origin and preserves
+ship progress and market state.
+
 ## Run during development
 
 ```sh

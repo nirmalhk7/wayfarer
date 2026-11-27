@@ -9,6 +9,7 @@
     "userInterfaceStyle": "dark",
     "android": {
       "package": "com.nirmalhk7.wayfarer",
+      "allowBackup": false,
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION"
@@ -27,6 +28,7 @@
     },
     "plugins": [
       "./plugins/withGradleTestCompatibility.cjs",
+      "./plugins/withAndroidDataExtractionRules.cjs",
       [
         "expo-location",
         {

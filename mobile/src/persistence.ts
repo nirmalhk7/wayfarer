@@ -471,3 +471,21 @@ export function decodeGameState(raw: string | null | undefined, mode?: CampaignM
   if ((mode === "live" && game?.mapId) || (mode === "training" && game?.mapId && game.mapId !== NORTH_COAST_MAP_ID)) return null;
   return game;
 }
+
+// Pre-atlas Training saves could use the first measured Live fix as their origin.
+const LEGACY_TRAINING_ORIGIN: Coordinates = { latitude: 39.7392, longitude: -104.9903 };
+
+export function restoreTrainingGame(raw: string | null): GameState | null {
+  const saved = decodeGameState(raw, "training");
+  if (!saved || saved.mapId === NORTH_COAST_MAP_ID) return saved;
+
+  const simulation = createGame({ origin: LEGACY_TRAINING_ORIGIN, seed: saved.seed });
+  return {
+    ...saved,
+    origin: simulation.origin,
+    ports: saved.ports.map((port, index) => ({
+      ...port,
+      position: simulation.ports[index].position,
+    })),
+  };
+}

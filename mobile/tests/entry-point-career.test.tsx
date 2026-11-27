@@ -79,6 +79,33 @@ async function campaign(mode: "live" | "training") {
     : decodeGameState(await AsyncStorage.getItem(storageKeyForMode("training")), "training");
 }
 
+test("Expo startup replaces old Training coordinates and keeps progress", async () => {
+  const old = createGame({
+    origin: { latitude: 10.123456, longitude: 20.654321 },
+    seed: "legacy-training",
+  });
+  old.player.credits = 725;
+  old.ports[1].market[0].stock = 7;
+  const key = storageKeyForMode("training");
+  await AsyncStorage.setItem(key, encodeGameState(old));
+  const permissionCalls = jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls.length;
+  const watchCalls = jest.mocked(Location.watchPositionAsync).mock.calls.length;
+  const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
+  await render(<RegisteredApp />);
+  await screen.findByRole("switch", { name: "Training simulator" });
+  await waitFor(async () => {
+    const migrated = decodeGameState(await AsyncStorage.getItem(key), "training");
+    const simulation = createGame({ origin: { latitude: 39.7392, longitude: -104.9903 }, seed: old.seed });
+    expect(migrated).toEqual({
+      ...old,
+      origin: simulation.origin,
+      ports: old.ports.map((port, index) => ({ ...port, position: simulation.ports[index].position })),
+    });
+  });
+  expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls);
+  expect(jest.mocked(Location.watchPositionAsync).mock.calls).toHaveLength(watchCalls);
+});
+
 test("Expo entry point settles a Training shipment, pays for capacity and restores it", async () => {
   const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
   const mounted = await render(<RegisteredApp />);
