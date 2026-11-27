@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Build static, immutable effective port tiles from official TIGER/Line inputs."""
 import argparse
+import csv
 import gzip
 import hashlib
 import json
 import math
+import re
 import sqlite3
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
@@ -15,8 +17,10 @@ from shapely import from_wkb, make_valid, to_wkb, union_all
 from shapely.affinity import translate
 from shapely.geometry import Polygon, box
 
-from atlas_sources import REVISION, SOURCE, STATES, digest
+from atlas_sources import RANKED_RELEASE, REVISION, SOURCE, STATES, digest
 
+RANKS_PATH = Path(__file__).with_name("county2026-game-ranks.tsv")
+RANK_FIELDS = ("crime_rank", "patrol_rank")
 HALO = .25
 SCALE = 10_000_000
 ogr.UseExceptions()
@@ -160,6 +164,33 @@ def dump(data):
     return (json.dumps(data, separators=(",", ":"), ensure_ascii=False, sort_keys=True) + "\n").encode()
 
 
+def join_game_ranks(registry, path):
+    raw = path.read_bytes()
+    ranks = {}
+    rows = csv.reader(raw.decode("utf-8").splitlines(), delimiter="\t")
+    if next(rows, None) != ["geoid", *RANK_FIELDS]:
+        raise ValueError("Unexpected county rank header")
+    for line, row in enumerate(rows, 2):
+        if len(row) != 3 or not re.fullmatch(r"[0-9]{5}", row[0]):
+            raise ValueError(f"Invalid county rank row {line}")
+        geoid, *values = row
+        if geoid in ranks:
+            raise ValueError(f"Duplicate county rank GEOID: {geoid}")
+        if any(not re.fullmatch(r"[1-9]|10", value) for value in values):
+            raise ValueError(f"Ranks for {geoid} must be integers from 1 to 10")
+        ranks[geoid] = dict(zip(RANK_FIELDS, map(int, values), strict=True))
+    if registry.keys() != ranks.keys():
+        missing = sorted(registry.keys() - ranks.keys())
+        unexpected = sorted(ranks.keys() - registry.keys())
+        raise ValueError(
+            f"County rank coverage mismatch: {len(missing)} missing {missing[:10]}, "
+            f"{len(unexpected)} unexpected {unexpected[:10]}"
+        )
+    for geoid, fields in ranks.items():
+        registry[geoid].update(fields)
+    return hashlib.sha256(raw).hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
@@ -170,13 +201,22 @@ def main():
     args = parser.parse_args()
     states = sorted(set(args.states))
     source = json.loads(args.lock.read_text())
-    release = args.output / REVISION
-    release.mkdir(parents=True, exist_ok=True)
-    (release / "tiles").mkdir(exist_ok=False)
+    national = set(states) == set(STATES)
+    release = args.output / (RANKED_RELEASE if national else REVISION)
+    args.output.mkdir(parents=True, exist_ok=True)
+    if release.exists():
+        raise FileExistsError(f"Atlas output already exists: {release}")
     with tempfile.TemporaryDirectory(dir=args.output) as temporary:
         database = str(Path(temporary) / "geometry.sqlite")
         with sqlite3.connect(database) as connection:
             tiles, registry = index_sources(connection, args.archive, source, states)
+        if national:
+            source["gameRanks"] = {
+                "method": "Grouped Codex GPT-6 Luna High gameplay estimates",
+                "evidenceLevel": "uncalibrated_gameplay_estimate",
+                "sha256": join_game_ranks(registry, RANKS_PATH),
+            }
+        (release / "tiles").mkdir(parents=True, exist_ok=False)
         work = ((database, release, x, y) for x, y in sorted(tiles))
         index = {}
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
@@ -187,11 +227,15 @@ def main():
                 if idx % 100 == 0:
                     print(f"Compiled {idx}/{len(tiles)} regions", flush=True)
     metadata = {"revision": REVISION, "year": 2026, "states": states, "halo": HALO, "scale": SCALE, "tiles": index}
-    (release / "index.json").write_bytes(dump(metadata))
+    counties = dump({
+        "revision": release.name, "ports": [registry[key] for key in sorted(registry)],
+    })
+    if national:
+        metadata["release"] = RANKED_RELEASE
+        metadata["countiesSha256"] = hashlib.sha256(counties).hexdigest()
+    (release / "counties.json").write_bytes(counties)
     (release / "sources.json").write_bytes(dump(source))
-    (release / "counties.json").write_bytes(dump({
-        "revision": REVISION, "ports": [registry[key] for key in sorted(registry)],
-    }))
+    (release / "index.json").write_bytes(dump(metadata))
     print(json.dumps({
         "states": len(states), "counties": len(registry), "regions": len(index),
         "gzipBytes": sum(item["gzipBytes"] for item in index.values()),

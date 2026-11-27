@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,10 +59,25 @@ test("local backend entry point serves the Android catalog and has no web or wri
   if (real) {
     const registry = await fetch(base + "/counties.json");
     assert.equal(registry.status, 200);
-    const { ports } = await registry.json();
+    const registryBody = await registry.text();
+    const { ports, revision } = JSON.parse(registryBody);
+    assert.equal(revision, basename(release));
     assert.equal(ports.length, 3144);
     assert.equal(new Set(ports.map(({ geoid }) => geoid)).size, 3144);
     assert.equal(new Set(ports.map(({ stateGeoid }) => stateGeoid)).size, 51);
+    if (revision === "county2026-v2") {
+      const { countiesSha256 } = JSON.parse(await readFile(join(release, "index.json"), "utf8"));
+      assert.equal(countiesSha256, createHash("sha256").update(registryBody).digest("hex"));
+      const input = await readFile(new URL("../tools/county2026-game-ranks.tsv", import.meta.url), "utf8");
+      const actual = ["geoid\tcrime_rank\tpatrol_rank", ...ports.map(({ geoid, crime_rank, patrol_rank }) => {
+        assert.match(geoid, /^[0-9]{5}$/);
+        for (const rank of [crime_rank, patrol_rank]) {
+          assert.ok(Number.isInteger(rank) && rank >= 1 && rank <= 10);
+        }
+        return [geoid, crime_rank, patrol_rank].join("\t");
+      })].join("\n") + "\n";
+      assert.equal(actual, input);
+    }
   }
   const tile = await fetch(base + "/tiles/" + key + ".json");
   assert.equal(tile.status, 200);

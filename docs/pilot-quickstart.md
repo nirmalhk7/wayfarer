@@ -11,18 +11,22 @@ curl -fLO https://www2.census.gov/geo/tiger/TIGER2026/COUNTY/tl_2026_us_county.z
 python3 tools/build-port-atlas.py tl_2026_us_county.zip tools/tiger2026-county-source.json ./atlas-output
 ```
 
-The compiler keeps NAD83 coordinates and polygon rings, including holes and detached parts. It handles the date line, clips geometry into overlapping one-degree regions and rounds runtime coordinates to seven decimal places without simplifying. The compiler emits 1,570 gzip regions totaling 64,764,758 bytes and a separate GEOID registry. Its largest decoded region is 841,534 bytes. The verified `index.json` SHA-256 is `76e2a77500c012f077575183a899ae23a913f27e97c0ab1b2656dee01deaa337`. Release archives and generated regions belong outside Git and outside the APK.
+The compiler keeps NAD83 coordinates and polygon rings, including holes and detached parts. It handles the date line, clips geometry into overlapping one-degree regions and rounds runtime coordinates to seven decimal places without simplifying. The compiler emits 1,570 gzip regions totaling 64,764,758 bytes and a separate GEOID registry. Its largest decoded region is 841,534 bytes. The builder prints the release index SHA-256 to pin in Android. Release archives and generated regions belong outside Git and outside the APK.
+
+The full build joins `tools/county2026-game-ranks.tsv` to the Shapefile on the five-character GEOID and writes integer `crime_rank` and `patrol_rank` to every county in `counties.json`. Missing, duplicate, unexpected, or invalid rows fail the build. The compact TSV preserves the raw 3–6 values from the grouped Codex GPT-6 Luna High dataset (source JSON SHA-256 `c9c3590832be7ae8b1e8376aec09965d28ad306cf48a31f36e9ea073a6b96d8a`). These uncalibrated fictional gameplay scores describe neither actual crime and safety nor police staffing or patrol activity. The ranks are registry metadata only. The index records the registry checksum and `sources.json` records the TSV checksum and provenance.
+
+The ranked national output is `county2026-v2`. Its index and tiles retain the `county2026-v1` geometry protocol so existing Android builds can read them with the new URL and index checksum. Partial `--states` builds retain the legacy output format and omit ranks. Use a fresh output root when testing partial builds.
 
 ## Serve and replay
 
 ```sh
-WAYFARER_ATLAS_TEST_DATA="$PWD/atlas-output/county2026-v1" npm test
+WAYFARER_ATLAS_TEST_DATA="$PWD/atlas-output/county2026-v2" npm test
 WAYFARER_ATLAS_DIR="$PWD/atlas-output" npm run backend
 ```
 
-The loopback backend serves `GET /atlas/county2026-v1/index.json`, `/counties.json`, `/sources.json` and `/tiles/{longitudeDegree}_{latitudeDegree}.json` under that prefix. Tile requests with gzip support receive precompressed bytes. The historical `/v1/territories` remains available for Training consumers. The retired subdivision endpoints return HTTP 410.
+The loopback backend serves `GET /atlas/county2026-v2/index.json`, `/counties.json`, `/sources.json` and `/tiles/{longitudeDegree}_{latitudeDegree}.json` under that prefix. It can also serve an existing `county2026-v1` release from its own directory. Tile requests with gzip support receive precompressed bytes. The historical `/v1/territories` remains available for Training consumers. The retired subdivision endpoints return HTTP 410.
 
-Production builds need an HTTPS base URL ending at the release directory. Set `EXPO_PUBLIC_PORT_ATLAS_URL` and `EXPO_PUBLIC_PORT_ATLAS_SHA256` when building Android. The Android emulator can use `http://10.0.2.2:4197/atlas/county2026-v1` in development, subject to Android’s cleartext networking policy. Hosts must serve immutable index and tile resources at these URLs. The app verifies the pinned index hash and each tile’s decoded byte length and checksum before use. No public atlas host is configured by default.
+Production builds need an HTTPS base URL ending at the release directory. Set `EXPO_PUBLIC_PORT_ATLAS_URL` and `EXPO_PUBLIC_PORT_ATLAS_SHA256` when building Android. The Android emulator can use `http://10.0.2.2:4197/atlas/county2026-v2` in development, subject to Android’s cleartext networking policy. Hosts must serve immutable index and tile resources at these URLs. The app verifies the pinned index hash and each tile’s decoded byte length and checksum before use. No public atlas host is configured by default.
 
 The registered Expo tests replay within San Mateo, across San Mateo and San Francisco, near an ambiguous border, and with stale, denied or unavailable fixes. Geometry tests also replay the Oregon–Washington border and both sides of the date line in Alaska. The backend suite checks actual HTTP responses. Use public synthetic fixes and cache a test region before testing airplane mode.
 

@@ -5,12 +5,12 @@ import { gunzipSync } from "node:zlib";
 
 const atlas = new URL("../mobile/src/territories/north-coast.json", import.meta.url);
 const territoryGeoJSON = readFileSync(atlas);
-const release = "county2026-v1";
+const releases = new Set(["county2026-v1", "county2026-v2"]);
 const releaseDirectory = process.env.WAYFARER_ATLAS_DIR;
 const retired = JSON.stringify({ error: "Port definitions have moved to the versioned county atlas" });
 const immutable = { "Cache-Control": "public, max-age=31536000, immutable" };
 
-function asset(path) {
+function asset(release, path) {
   if (!releaseDirectory) return null;
   try { return readFileSync(join(releaseDirectory, release, path)); }
   catch (error) {
@@ -46,13 +46,15 @@ const server = createServer((req, res) => {
   if (req.url === "/v2/ports" || /^\/v2\/ports\/\d{10}\/boundary$/.test(req.url)) {
     return send(req, res, 410, retired);
   }
-  const path = req.url.startsWith("/atlas/" + release + "/") ? req.url.slice(8 + release.length) : "";
+  const match = /^\/atlas\/([^/]+)\/(.+)$/.exec(req.url);
+  if (!match || !releases.has(match[1])) return send(req, res, 404, missing);
+  const [, release, path] = match;
   if (/^(?:index|sources|counties)\.json$/.test(path)) {
-    const body = asset(path);
+    const body = asset(release, path);
     if (body) return send(req, res, 200, body, "application/json", immutable);
   }
   if (/^tiles\/-?\d{1,3}_-?\d{1,2}\.json$/.test(path)) {
-    const body = asset(path + ".gz");
+    const body = asset(release, path + ".gz");
     if (body) {
       const headers = { ...immutable, Vary: "Accept-Encoding" };
       if (/(?:^|,\s*)gzip\s*(?:,|$)/i.test(req.headers["accept-encoding"] ?? "")) {
