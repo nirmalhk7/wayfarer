@@ -9,7 +9,7 @@ import { AccessibilityInfo, Animated, Share } from "react-native";
 
 import "../index";
 import { createGame } from "../src/game/engine";
-import { decodeGameState, encodeGameState, LEGACY_STORAGE_KEY, LIVE_RESET_MARKER, SUBDIVISION_LIVE_STORAGE_KEY, storageKeyForMode } from "../src/persistence";
+import { decodeGameState, encodeGameState, LEGACY_STORAGE_KEY, LIVE_RESET_MARKER, COUNTY_LIVE_STORAGE_KEY, storageKeyForMode } from "../src/persistence";
 import { createDockingCoordinator } from "../src/ui/dockingCoordinator";
 import { DOCKING_SESSION_STORAGE_KEY, persistDockingCoordinator } from "../src/ui/dockingSessionStore";
 
@@ -19,6 +19,9 @@ jest.mock("@react-native-async-storage/async-storage", () =>
 jest.mock("react-native-safe-area-context", () =>
   jest.requireActual<{ default: unknown }>("react-native-safe-area-context/jest/mock").default,
 );
+jest.mock("../src/atlas/download", () => jest.requireActual<typeof import("./atlas-fixture")>("./atlas-fixture").atlasFixture());
+const downloaded = jest.requireMock("../src/atlas/download") as ReturnType<typeof import("./atlas-fixture")["atlasFixture"]>;
+
 jest.mock("expo", () => ({ ...jest.requireActual<typeof import("expo")>("expo"), registerRootComponent: jest.fn() }));
 jest.mock("expo-location", () => ({
   requestForegroundPermissionsAsync: jest.fn(async () => ({ status: "denied" })),
@@ -72,7 +75,7 @@ async function order(side: "Buy" | "Sell", commodity: string, quantity: number) 
 
 async function campaign(mode: "live" | "training") {
   return mode === "live"
-    ? decodeGameState(await AsyncStorage.getItem(SUBDIVISION_LIVE_STORAGE_KEY), "subdivision-live")
+    ? decodeGameState(await AsyncStorage.getItem(COUNTY_LIVE_STORAGE_KEY), "county-live")
     : decodeGameState(await AsyncStorage.getItem(storageKeyForMode("training")), "training");
 }
 
@@ -232,8 +235,8 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   });
   jest.mocked(Location.watchPositionAsync).mockResolvedValueOnce({ remove() {} });
   await press("Start live navigation");
-  await screen.findByRole("header", { name: "Eureka" });
-  await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds).toEqual(["0602390930"]));
+  await screen.findByRole("header", { name: "Humboldt" });
+  await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds).toEqual(["county:06023"]));
   expect((await campaign("live"))?.player.credits).toBe(900);
   expect(await AsyncStorage.getItem(storageKeyForMode("training"))).toBe(trainingAfter);
 });
@@ -333,16 +336,16 @@ test("Training starts without permission and an explicit denied Live start prese
   const reads = jest.mocked(Location.getCurrentPositionAsync).mock.calls.length;
   await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
-  expect(screen.getByText(/WFR-00 · Arcata · Approach/)).toBeTruthy();
+  expect(screen.getByText(/WFR-00 · Humboldt · Approach/)).toBeTruthy();
   await press("Simulate approach to Wayfarer Freeport");
   await press("PAY");
-  expect(screen.getByText(/WFR-00 · Arcata · Docked/)).toBeTruthy();
+  expect(screen.getByText(/WFR-00 · Humboldt · Docked/)).toBeTruthy();
   await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", false);
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls);
   await press("Start live navigation");
   await screen.findByText("Location permission denied");
   await tab("Compass");
-  expect(screen.getAllByText("Range unavailable")).toHaveLength(10);
+  expect(screen.getByText("Port ranges need a fresh, accurate fix and downloaded port data.")).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Bridge");
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls + 1);
@@ -354,125 +357,127 @@ test("Training starts without permission and an explicit denied Live start prese
   expect(await campaign("live")).toBeNull();
 });
 
-test("Live switches markets at the GEOID boundary within Humboldt without geofencing or data upload", async () => {
+test("Live keeps one market within San Mateo, changes across counties, and reuses cached data offline", async () => {
   const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
-  const eureka = { latitude: 40.7143559, longitude: -124.0990456 };
-  const arcata = { latitude: 40.735612, longitude: -123.8656711 };
-  const border = { latitude: 40.73685, longitude: -123.945483 };
+  const foster = { latitude: 37.5585, longitude: -122.2711 };
+  const burlingame = { latitude: 37.5841, longitude: -122.3661 };
+  const sanFrancisco = { latitude: 37.7599, longitude: -122.4384 };
+  const border = { latitude: 37.708333, longitude: -122.45 };
   const grant = { status: Location.PermissionStatus.GRANTED, granted: true, canAskAgain: true, expires: "never" } as const;
   const network = jest.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Offline test"));
   const time = jest.spyOn(Date, "now");
   let now = 2_000_000;
   time.mockImplementation(() => now);
-  const fix = (point: typeof eureka, timestamp = now): Location.LocationObject => ({
-    coords: { ...point, accuracy: 5, altitude: null, altitudeAccuracy: null, speed: null, heading: null },
-    timestamp,
+  const fix = (point: typeof foster, timestamp = now): Location.LocationObject => ({
+    coords: { ...point, accuracy: 5, altitude: null, altitudeAccuracy: null, speed: null, heading: null }, timestamp,
   });
   let listener: Location.LocationCallback | undefined;
   const remove = jest.fn();
-  jest.mocked(Location.requestForegroundPermissionsAsync).mockResolvedValueOnce(grant);
-  jest.mocked(Location.getCurrentPositionAsync).mockResolvedValueOnce(fix(eureka));
-  jest.mocked(Location.watchPositionAsync).mockImplementationOnce(async (_options, callback) => {
-    listener = callback;
-    return { remove };
-  });
+  function allow(fixture: typeof foster) {
+    jest.mocked(Location.requestForegroundPermissionsAsync).mockResolvedValueOnce(grant);
+    jest.mocked(Location.getCurrentPositionAsync).mockResolvedValueOnce(fix(fixture));
+    jest.mocked(Location.watchPositionAsync).mockImplementationOnce(async (_options, callback) => {
+      listener = callback;
+      return { remove };
+    });
+  }
+  async function move(point: typeof foster, timestamp?: number) {
+    await act(async () => listener!(fix(point, timestamp)));
+  }
   const old = createGame({ origin: { latitude: 0, longitude: 0 } });
   old.player.credits = 1042;
   const archive = encodeGameState(old);
   await AsyncStorage.setItem(storageKeyForMode("live"), archive);
+  downloaded.restart();
+  downloaded.offline(false);
   const mounted = await render(<RegisteredApp />);
   const training = await screen.findByRole("switch", { name: "Training simulator" });
   await fireEvent(training, "valueChange", false);
   await tab("Compass");
   expect(screen.getByTestId("port-compass")).toBeTruthy();
-  expect(screen.getAllByText("Range unavailable")).toHaveLength(10);
-  expect(screen.queryByText("Current port")).toBeNull();
+  expect(screen.getByText("Port ranges need a fresh, accurate fix and downloaded port data.")).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Bridge");
+  allow(foster);
   await press("Start live navigation");
-  await screen.findByRole("header", { name: "Eureka" });
-  expect(screen.getByText("Arrived in Eureka")).toBeTruthy();
+  await screen.findByRole("header", { name: "San Mateo" });
+  expect(screen.getByText("Arrived in San Mateo")).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Compass");
   expect(screen.getByText("Current port")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Arcata, 8.0 km · North 10° true" })).toBeTruthy();
-  await press("Arcata, 8.0 km · North 10° true");
-  expect(screen.getByText("Arcata · 8.0 km · North 10° true")).toBeTruthy();
-  expectPlainPortLanguage();
+  const beforeRange = screen.getByRole("button", { name: /^San Francisco, .* true$/ }).props.accessibilityLabel;
   await tab("Bridge");
   await press("Enter station market");
   await order("Buy", "Ion Fuel", 1);
   await waitFor(async () => expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1));
   const first = (await campaign("live"))!;
   expect(first.player.credits).toBeLessThan(1042);
-  expect(first.discoveredPortIds).toEqual(["0602390930"]);
+  expect(first.discoveredPortIds).toEqual(["county:06081"]);
   expect(first.dockedPortId).toBeNull();
-  expect(screen.getByText("Bought 1 × Ion Fuel at Eureka")).toBeTruthy();
-  expectPlainPortLanguage();
+  expect(screen.getByText("Bought 1 × Ion Fuel at San Mateo")).toBeTruthy();
 
-  expect(listener).toBeDefined();
-  await act(async () => listener!(fix(eureka))); // Duplicate timestamp.
-  now += 1_000;
-  const movedWithinEureka = { latitude: 40.719421, longitude: -124.104808 };
-  await act(async () => listener!(fix(movedWithinEureka)));
-  expect(screen.getByRole("header", { name: "Eureka" })).toBeTruthy();
+  await move(foster); // Duplicate timestamp.
+  now += 1000;
+  await move(burlingame);
+  expect(screen.getByRole("header", { name: "San Mateo" })).toBeTruthy();
   expect(await campaign("live")).toEqual(first);
-  const saved = await AsyncStorage.getItem(SUBDIVISION_LIVE_STORAGE_KEY);
-  expect(saved).not.toContain(String(movedWithinEureka.latitude));
-  expect(saved).not.toContain(String(movedWithinEureka.longitude));
+  const saved = await AsyncStorage.getItem(COUNTY_LIVE_STORAGE_KEY);
+  expect(saved).not.toContain(String(burlingame.latitude));
+  expect(saved).not.toContain(String(burlingame.longitude));
   await tab("Compass");
-  expect(screen.getByRole("button", { name: "Arcata, 7.5 km · North 14° true" })).toBeTruthy();
-  expect(screen.getByText("Current port")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /^San Francisco, .* true$/ }).props.accessibilityLabel).not.toBe(beforeRange);
   await tab("Station");
 
-  for (const longitude of [border.longitude - .00009, border.longitude + .00009]) {
-    now += 1_000;
-    await act(async () => listener!(fix({ ...border, longitude })));
+  for (const latitude of [border.latitude - .00009, border.latitude + .00009]) {
+    now += 1000;
+    await move({ ...border, latitude });
     expect(screen.getByText("Market encrypted")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Buy Ion Fuel/ })).toBeNull();
   }
   expect(await campaign("live")).toEqual(first);
-  await tab("Compass");
-  expect(screen.getByText("Near a port boundary. Market access paused.")).toBeTruthy();
-  expect(screen.queryByText("Current port")).toBeNull();
-  expect(screen.getByRole("button", { name: /^Arcata, .* true$/ })).toBeTruthy();
-  expectPlainPortLanguage();
-  await tab("Station");
-
-  now += 1_000;
-  await act(async () => listener!(fix(arcata)));
-  await screen.findByRole("header", { name: "Arcata" });
+  now += 1000;
+  await move(sanFrancisco);
+  await screen.findByRole("header", { name: "San Francisco" });
   expect(screen.getByRole("button", { name: /^Buy Ion Fuel/ })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /simulate approach/i })).toBeNull();
   await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds)
-    .toEqual(["0602390930", "0602390100"]));
+    .toEqual(["county:06081", "county:06075"]));
   await tab("Compass");
-  expect(screen.getByText("Current port")).toBeTruthy();
-  expect(screen.getByText("Arcata")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Eureka, 6.4 km · West 250° true" })).toBeTruthy();
+  expect(screen.getByText("San Francisco")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /^San Mateo, .* true$/ })).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Station");
   const crossingTime = now;
   now += 31_000;
-  await act(async () => listener!(fix(arcata, crossingTime + 1)));
+  await move(sanFrancisco, crossingTime + 1);
   expect(screen.getByText("Market encrypted")).toBeTruthy();
   expect(screen.getByText("Location fix expired")).toBeTruthy();
-  await tab("Compass");
-  expect(screen.getAllByText("Range unavailable")).toHaveLength(10);
-  expect(screen.queryByText("Current port")).toBeNull();
-  expect(screen.queryByRole("button", { name: /true$/ })).toBeNull();
-  expectPlainPortLanguage();
-  await tab("Hold");
-  expectPlainPortLanguage();
   expect(await AsyncStorage.getItem(storageKeyForMode("live"))).toEqual(archive);
   expect(network).not.toHaveBeenCalled();
+  expect(downloaded.paths.every((path) => /^(?:index\.json|tiles\/-?\d+_-?\d+\.json)$/.test(path))).toBe(true);
 
   await mounted.unmount();
   expect(remove).toHaveBeenCalledTimes(1);
-  await render(<RegisteredApp />);
-  const switchAgain = await screen.findByRole("switch", { name: "Training simulator" });
-  await fireEvent(switchAgain, "valueChange", false);
-  await tab("Station");
-  expect(screen.getByText("Market encrypted")).toBeTruthy();
-  expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1);
+  downloaded.restart();
+  downloaded.offline(true);
+  try {
+    const requests = downloaded.paths.length;
+    await render(<RegisteredApp />);
+    const switchAgain = await screen.findByRole("switch", { name: "Training simulator" });
+    await fireEvent(switchAgain, "valueChange", false);
+    await tab("Station");
+    expect(screen.getByText("Market encrypted")).toBeTruthy();
+    await tab("Bridge");
+    allow(sanFrancisco);
+    await press("Start live navigation");
+    await screen.findByRole("header", { name: "San Francisco" });
+    expect(downloaded.paths).toHaveLength(requests);
+    expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1);
+    now += 1000;
+    await move({ latitude: 38.9072, longitude: -77.0369 });
+    await waitFor(() => expect(screen.queryByText("Arrived in San Francisco")).toBeNull());
+    await tab("Station");
+    expect(screen.getByText("Market encrypted")).toBeTruthy();
+  } finally {
+    downloaded.offline(false);
+  }
 });

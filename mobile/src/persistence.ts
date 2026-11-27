@@ -19,8 +19,11 @@ import {
 import { createNorthCoastTraining, NORTH_COAST_MAP_ID } from "./territories/northCoast";
 
 import { createSubdivisionCampaign } from "./game/subdivisionCampaign";
+import { COUNTY_CAMPAIGN_ID, createCountyCampaign } from "./game/countyCampaign";
+import { PORT_ID } from "./atlas/geometry";
 import { SUBDIVISION_MAP_ID } from "./territories/subdivisions";
 
+export const COUNTY_LIVE_STORAGE_KEY = "wayfarer.mobile.county-live.save.v1";
 export const SUBDIVISION_LIVE_STORAGE_KEY = "wayfarer.mobile.cousub-live.save.v1";
 export const LIVE_STORAGE_KEY = "wayfarer.mobile.live.save.v2";
 export const TRAINING_STORAGE_KEY = "wayfarer.mobile.training.save.v2";
@@ -34,6 +37,7 @@ type UnknownRecord = Record<string, unknown>;
 const COMMODITY_IDS = new Set(COMMODITIES.map((commodity) => commodity.id));
 const MAX_DOCKING_PROOF_ID_LENGTH = 96;
 const MAX_SAVE_LENGTH = 256 * 1024;
+const MAX_COUNTY_SAVE_LENGTH = 1_850_000;
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -250,7 +254,7 @@ function readEncounter(value: unknown, knownPortIds: ReadonlySet<string>): Encou
 function readGameState(value: unknown): GameState | null {
   if (!isRecord(value) || value.version !== 1 || !isNonEmptyString(value.seed)) return null;
   const origin = readCoordinates(value.origin);
-  if (!origin || !Array.isArray(value.ports) || value.ports.length === 0) return null;
+  if (!origin || !Array.isArray(value.ports)) return null;
 
   const ports: Starport[] = [];
   const portIds = new Set<string>();
@@ -262,10 +266,11 @@ function readGameState(value: unknown): GameState | null {
   }
 
   const { mapId } = value;
-  if (mapId !== undefined && mapId !== NORTH_COAST_MAP_ID && mapId !== SUBDIVISION_MAP_ID) return null;
+  const county = mapId === COUNTY_CAMPAIGN_ID;
+  if (mapId !== undefined && mapId !== NORTH_COAST_MAP_ID && mapId !== SUBDIVISION_MAP_ID && !county) return null;
   let base: GameState;
   try {
-    base = mapId === SUBDIVISION_MAP_ID ? createSubdivisionCampaign()
+    base = county ? createCountyCampaign() : mapId === SUBDIVISION_MAP_ID ? createSubdivisionCampaign()
       : mapId === NORTH_COAST_MAP_ID ? createNorthCoastTraining() : createGame({ origin, seed: value.seed });
   } catch {
     return null;
@@ -273,8 +278,11 @@ function readGameState(value: unknown): GameState | null {
   if (base.seed !== value.seed || base.origin.latitude !== origin.latitude || base.origin.longitude !== origin.longitude) {
     return null;
   }
-  if (ports.length !== base.ports.length) return null;
-  for (let index = 0; index < ports.length; index += 1) {
+  if (county) {
+    if (ports.some((port) => !PORT_ID.test(port.id) || port.callsign !== port.id || port.name.length > 120
+      || port.position.latitude !== origin.latitude || port.position.longitude !== origin.longitude)) return null;
+  } else if (ports.length !== base.ports.length) return null;
+  for (let index = 0; !county && index < ports.length; index += 1) {
     const port = ports[index];
     const expected = base.ports[index];
     if (
@@ -308,7 +316,8 @@ function readGameState(value: unknown): GameState | null {
     return null;
   }
   if (revealedMarketIds.some((id) => !discoveredPortIds.includes(id))) return null;
-  if (mapId === SUBDIVISION_MAP_ID) {
+  if (county && (discoveredPortIds.length !== ports.length || revealedMarketIds.length !== ports.length)) return null;
+  if (mapId === SUBDIVISION_MAP_ID || county) {
     // Authorization comes exclusively from a fresh fix, so it never survives a save.
     if (dockedPortId !== null || encounter !== null || dockSequence !== 0 || value.delivery !== undefined) return null;
   } else if (!discoveredPortIds.includes(base.ports[0].id) || !revealedMarketIds.includes(base.ports[0].id)) return null;
@@ -440,11 +449,13 @@ export function migrateV1Save(value: unknown): GameState | null {
 export function encodeGameState(state: GameState): string {
   const game = readGameState(state);
   if (!game) throw new TypeError("Valid game state required");
-  return JSON.stringify({ version: 2, game });
+  const raw = JSON.stringify({ version: 2, game });
+  if (game.mapId === COUNTY_CAMPAIGN_ID && raw.length > MAX_COUNTY_SAVE_LENGTH) throw new RangeError("Live save is too large");
+  return raw;
 }
 
-export function decodeGameState(raw: string | null | undefined, mode?: CampaignMode | "subdivision-live"): GameState | null {
-  if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_SAVE_LENGTH) return null;
+export function decodeGameState(raw: string | null | undefined, mode?: CampaignMode | "subdivision-live" | "county-live"): GameState | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > (mode === "county-live" ? MAX_COUNTY_SAVE_LENGTH : MAX_SAVE_LENGTH)) return null;
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -452,10 +463,11 @@ export function decodeGameState(raw: string | null | undefined, mode?: CampaignM
     return null;
   }
   if (!isRecord(value)) return null;
-  if (value.version === 1) return mode === "subdivision-live" ? null : migrateV1Save(value);
+  if (value.version === 1) return mode === "subdivision-live" || mode === "county-live" ? null : migrateV1Save(value);
   if (value.version !== 2) return null;
   const game = readGameState(value.game);
+  if (mode === "county-live") return game?.mapId === COUNTY_CAMPAIGN_ID ? game : null;
   if (mode === "subdivision-live") return game?.mapId === SUBDIVISION_MAP_ID ? game : null;
-  if ((mode === "live" && game?.mapId) || (mode === "training" && game?.mapId === SUBDIVISION_MAP_ID)) return null;
+  if ((mode === "live" && game?.mapId) || (mode === "training" && game?.mapId && game.mapId !== NORTH_COAST_MAP_ID)) return null;
   return game;
 }

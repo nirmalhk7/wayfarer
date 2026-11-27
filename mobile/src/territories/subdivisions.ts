@@ -61,7 +61,7 @@ export function subdivisionGeometry(geoid: string): Point[][][] {
   return geometry;
 }
 
-function ringLocation(ring: Point[], position: Coordinates, safeDistance: number) {
+export function ringLocation(ring: Point[], position: Coordinates, safeDistance: number) {
   // Conservative local metres/degree for this Northern California pilot.
   const scaleX = 110_000 * Math.cos((position.latitude + 0.1) * Math.PI / 180);
   const scaleY = 110_000;
@@ -104,7 +104,7 @@ export function locateSubdivision(position: Coordinates, safetyRadius = BORDER_M
 }
 
 export type Observation = Coordinates & { timestamp: number; accuracy: number | null; mocked?: boolean };
-export function assessObservation(fix: Observation, now: number) {
+export function observationQuality(fix: Observation, now: number) {
   if (!Number.isFinite(fix.timestamp) || fix.timestamp > now || now - fix.timestamp >= FIX_MAX_AGE_MS) {
     return { kind: "stale" } as const;
   }
@@ -114,5 +114,10 @@ export function assessObservation(fix: Observation, now: number) {
     || !Number.isFinite(fix.longitude) || Math.abs(fix.longitude) > 180) {
     return { kind: "poor" } as const;
   }
-  return locateSubdivision(fix, fix.accuracy + BORDER_MARGIN_M);
+  return { kind: "usable", radius: fix.accuracy + BORDER_MARGIN_M } as const;
+}
+
+export function assessObservation(fix: Observation, now: number) {
+  const quality = observationQuality(fix, now);
+  return quality.kind === "usable" ? locateSubdivision(fix, quality.radius) : quality;
 }

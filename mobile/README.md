@@ -1,18 +1,13 @@
 # Wayfarer Android
 
-Wayfarer is a native Android space-trading game. Every U.S. Live port is one
-official TIGER/Line Census county subdivision, identified by its ten-digit GEOID.
-An accurate foreground fix can open a new market on crossing a subdivision
-boundary. You can cross to a new port without leaving the same parent county.
+Wayfarer is an Android space-trading game. In Live, every U.S. county or county
+equivalent in the 50 states and D.C. is a port. Location matching stays on the
+phone. An accurate foreground fix opens a new market after you cross into
+another port. Android reuses downloaded regions offline.
 
-Live starts only after an opt-in. Location matching stays on the device. Live
-markets pause near ambiguous borders, outside coverage, when a fix expires, and
-while the app is in the background. The North Coast pilot covers ten subdivisions
-in Humboldt and Del Norte counties. Field verification is pending.
-
-Training opens offline. Plot simulated approaches, trade, deliver contracts and
-upgrade your ship. It uses a separate save. Training scenarios can share the same
-subdivision and carry no Live access. See the [full pilot and source notes](../docs/pilot-quickstart.md).
+Training opens offline with its own save. Simulate arrivals, trade, deliver
+contracts and upgrade your ship. To enable Live on a new build, see the
+[atlas hosting and replay guide](../docs/pilot-quickstart.md).
 
 ## Run during development
 

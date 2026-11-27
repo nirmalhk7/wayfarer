@@ -39,14 +39,16 @@ import {
   formatDistance,
   rumorSummary,
 } from "./src/game/presentation";
-import { useSubdivisionArrival } from "./src/location/useSubdivisionArrival";
+import { usePortArrival } from "./src/location/usePortArrival";
 import { stopLegacyPointTasks } from "./src/location/retiredPointTasks";
-import { createSubdivisionCampaign, recordSubdivisionVisit } from "./src/game/subdivisionCampaign";
-import { locateSubdivision, PILOT_PORTS, subdivisionGeometry } from "./src/territories/subdivisions";
+import { createCountyCampaign, createCountyPort, recordCountyVisit } from "./src/game/countyCampaign";
+import { nearbyPorts } from "./src/atlas/geometry";
+
 import {
   LEGACY_STORAGE_KEY,
   LIVE_RESET_MARKER,
   SUBDIVISION_LIVE_STORAGE_KEY,
+  COUNTY_LIVE_STORAGE_KEY,
   decodeGameState,
   encodeGameState,
   storageKeyForMode,
@@ -63,13 +65,13 @@ import {
   applyCoordinatorSample,
   createDockingCoordinator,
   selectDockingTarget,
-  type DockingCoordinator,
+
 } from "./src/ui/dockingCoordinator";
 import { clearPersistedDockingCoordinator } from "./src/ui/dockingSessionStore";
 import { COCKPIT as COLORS } from "./src/ui/cockpitTheme";
 import { FlightScene } from "./src/ui/FlightScene";
 import { PortCompass, type PortReading } from "./src/ui/PortCompass";
-import { compassDirection, nearestBoundaryPoint, placeName } from "./src/game/compass";
+import { compassDirection, placeName } from "./src/game/compass";
 import { createNorthCoastTraining, NORTH_COAST_ORIGIN, territoryAt, usesNorthCoastTrainingMap } from "./src/territories/northCoast";
 
 async function clearLiveDockingData() {
@@ -77,6 +79,7 @@ async function clearLiveDockingData() {
   await Promise.all([
     clearPersistedDockingCoordinator(),
     AsyncStorage.removeItem(LEGACY_STORAGE_KEY),
+    AsyncStorage.removeItem(SUBDIVISION_LIVE_STORAGE_KEY),
   ]);
 }
 
@@ -306,30 +309,22 @@ export default function App() {
 
 function Wayfarer() {
   const initialCampaigns = useMemo<Campaigns>(() => ({
-    live: createSubdivisionCampaign(),
+    live: createCountyCampaign(),
     training: createNorthCoastTraining(),
   }), []);
   const [campaigns, setCampaigns] = useState<Campaigns>(initialCampaigns);
   const [mode, setMode] = useState<CampaignMode>("training");
-  const [positions, setPositions] = useState<Record<CampaignMode, Coordinates>>({
-    live: initialCampaigns.live.origin,
-    training: NORTH_COAST_ORIGIN,
-  });
-  const [selectedPortIds, setSelectedPortIds] = useState<Record<CampaignMode, string>>({
-    live: initialCampaigns.live.ports[0].id,
-    training: "port-0",
-  });
-  const [coordinators, setCoordinators] = useState<Record<CampaignMode, DockingCoordinator>>({
-    live: createDockingCoordinator({ id: initialCampaigns.live.ports[0].id, coords: initialCampaigns.live.origin }),
-    training: createDockingCoordinator({ id: "port-0", coords: NORTH_COAST_ORIGIN }),
-  });
+  const [trainingPosition, setTrainingPosition] = useState<Coordinates>(NORTH_COAST_ORIGIN);
+  const [trainingTarget, setTrainingTarget] = useState("port-0");
+  const [coordinator, setCoordinator] = useState(() =>
+    createDockingCoordinator({ id: "port-0", coords: NORTH_COAST_ORIGIN }));
   const [tab, setTab] = useState<Tab>("bridge");
   const [stationPanel, setStationPanel] = useState<"contracts" | "trade">("contracts");
   const [booting, setBooting] = useState(true);
   const [saveReady, setSaveReady] = useState(false);
   const [liveRequested, setLiveRequested] = useState(false);
   const [liveStartAttempt, setLiveStartAttempt] = useState(0);
-  const live = useSubdivisionArrival(mode === "live" && liveRequested, liveStartAttempt);
+  const live = usePortArrival(mode === "live" && liveRequested, liveStartAttempt);
   const [resetMode, setResetMode] = useState<CampaignMode | null>(null);
   const [resetting, setResetting] = useState(false);
   const [contractSaving, setContractSaving] = useState(false);
@@ -341,10 +336,10 @@ function Wayfarer() {
   const campaignsRef = useRef(campaigns);
   const liveSaveQueue = useRef(createLatestWriteQueue<GameState | null>(async (snapshot) => {
     if (snapshot) {
-      await AsyncStorage.setItem(SUBDIVISION_LIVE_STORAGE_KEY, encodeGameState(snapshot));
+      await AsyncStorage.setItem(COUNTY_LIVE_STORAGE_KEY, encodeGameState(snapshot));
     } else {
       // Mark Live as paused before removing the old coordinate-bearing data.
-      await AsyncStorage.setItem(SUBDIVISION_LIVE_STORAGE_KEY, LIVE_RESET_MARKER);
+      await AsyncStorage.setItem(COUNTY_LIVE_STORAGE_KEY, LIVE_RESET_MARKER);
       await AsyncStorage.setItem(storageKeyForMode("live"), LIVE_RESET_MARKER);
       await clearLiveDockingData();
     }
@@ -356,26 +351,18 @@ function Wayfarer() {
   }));
 
   const game = campaigns[mode];
-  const position = positions[mode];
-  const selectedPortId = mode === "live" ? live.presence.geoid : selectedPortIds.training;
-  const coordinator = coordinators[mode];
-
-  const selectedPort = useMemo(
-    () => game.ports.find((port) => port.id === selectedPortId) ?? game.ports[0],
-    [game.ports, selectedPortId],
-  );
-  const pilotPort = PILOT_PORTS.find((port) => port.geoid === live.presence.geoid);
+  const livePort = live.compassPosition ? live.presence.port : null;
+  const selectedPort = campaigns.training.ports.find(({ id }) => id === trainingTarget) ?? campaigns.training.ports[0];
   const dockedPort = mode === "live"
-    ? game.ports.find((port) => port.id === pilotPort?.geoid) ?? null
+    ? livePort && (game.ports.find((port) => port.id === livePort.id) ?? createCountyPort(livePort))
     : activeDockedPort(game, coordinator);
-  const berthed = dockedPort?.id === selectedPort.id;
-  const regionalTraining = mode === "training" && usesNorthCoastTrainingMap(game);
-  const trainingArea = regionalTraining ? locateSubdivision(selectedPort.position, 0) : null;
-  const trainingPlace = trainingArea?.kind === "inside" ? trainingArea.port.name
-    : regionalTraining ? territoryAt(selectedPort.position)?.name : undefined;
-  const selectedDistance = distanceMeters(position, selectedPort.position);
+  const berthed = mode === "live" ? Boolean(dockedPort) : dockedPort?.id === selectedPort.id;
+  const trainingPlace = mode === "training" && usesNorthCoastTrainingMap(game)
+    ? territoryAt(selectedPort.position)?.name : undefined;
+  const selectedDistance = distanceMeters(trainingPosition, selectedPort.position);
   const usedCargo = cargoUnits(game.player.cargo);
-  const compassPosition = mode === "live" ? live.compassPosition : position;
+  const compassPosition = mode === "live" ? live.compassPosition : trainingPosition;
+  const compassTile = live.compassTile;
   const currentPortId = compassPosition ? dockedPort?.id : undefined;
   const visitedIds = mode === "training" ? game.discoveredPortIds : undefined;
   const compassReadings = useMemo<PortReading[]>(() => {
@@ -388,20 +375,8 @@ function Wayfarer() {
         direction: compassPosition && compassDirection(compassPosition, port.position),
       }));
     }
-    return PILOT_PORTS.map((port) => {
-      const current = port.geoid === currentPortId;
-      return {
-        id: port.geoid,
-        name: placeName(port.name),
-        current,
-        direction: compassPosition && !current
-          ? compassDirection(compassPosition, nearestBoundaryPoint(compassPosition, subdivisionGeometry(port.geoid)))
-          : undefined,
-      };
-    }).sort((a, b) => Number(b.current) - Number(a.current)
-      || (a.direction?.meters ?? Infinity) - (b.direction?.meters ?? Infinity)
-      || a.name.localeCompare(b.name));
-  }, [tab, mode, game.ports, visitedIds, compassPosition, currentPortId]);
+    return compassPosition && compassTile ? nearbyPorts(compassTile, compassPosition, currentPortId) : [];
+  }, [tab, mode, game.ports, visitedIds, compassPosition, currentPortId, compassTile]);
   useEffect(() => {
     const back = BackHandler.addEventListener("hardwareBackPress", () => {
       if (tab === "bridge") return false;
@@ -417,27 +392,29 @@ function Wayfarer() {
     let cancelled = false;
     async function restore() {
       try {
-        const [newLiveRaw, oldLiveRaw, trainingRaw, legacyRaw] = await Promise.all([
+        const [countyRaw, subdivisionRaw, oldLiveRaw, trainingRaw, legacyRaw] = await Promise.all([
+          AsyncStorage.getItem(COUNTY_LIVE_STORAGE_KEY),
           AsyncStorage.getItem(SUBDIVISION_LIVE_STORAGE_KEY),
           AsyncStorage.getItem(storageKeyForMode("live")),
           AsyncStorage.getItem(storageKeyForMode("training")),
           AsyncStorage.getItem(LEGACY_STORAGE_KEY),
         ]);
-        const resetPending = newLiveRaw === LIVE_RESET_MARKER
-          || (oldLiveRaw === LIVE_RESET_MARKER && newLiveRaw === null);
-        if (resetPending) await clearLiveDockingData();
-        else await stopLegacyPointTasks().catch(() => {});
+        const resetPending = countyRaw === LIVE_RESET_MARKER
+          || (!countyRaw && (subdivisionRaw === LIVE_RESET_MARKER || (!subdivisionRaw && oldLiveRaw === LIVE_RESET_MARKER)));
+        if (resetPending) {
+          await AsyncStorage.setItem(COUNTY_LIVE_STORAGE_KEY, LIVE_RESET_MARKER);
+          await AsyncStorage.setItem(storageKeyForMode("live"), LIVE_RESET_MARKER);
+          await clearLiveDockingData();
+        } else await stopLegacyPointTasks().catch(() => {});
         if (cancelled) return;
-        const oldLive = resetPending ? null : decodeGameState(oldLiveRaw ?? legacyRaw, "live");
-        const nextLive = decodeGameState(newLiveRaw, "subdivision-live")
-          ?? (oldLive ? createSubdivisionCampaign(oldLive) : initialCampaigns.live);
+        const previous = resetPending ? null : decodeGameState(subdivisionRaw, "subdivision-live")
+          ?? decodeGameState(oldLiveRaw ?? legacyRaw, "live");
+        const nextLive = decodeGameState(countyRaw, "county-live")
+          ?? (previous ? createCountyCampaign(previous) : initialCampaigns.live);
         const nextTraining = decodeGameState(trainingRaw, "training") ?? initialCampaigns.training;
         setCampaigns({ live: nextLive, training: nextTraining });
-        setPositions((current) => ({ ...current, training: nextTraining.origin }));
-        setCoordinators((current) => ({
-          ...current,
-          training: createDockingCoordinator({ id: nextTraining.ports[0].id, coords: nextTraining.origin }),
-        }));
+        setTrainingPosition(nextTraining.origin);
+        setCoordinator(createDockingCoordinator({ id: nextTraining.ports[0].id, coords: nextTraining.origin }));
       } catch {
         if (!cancelled) setNotice("LOCAL SAVE UNAVAILABLE");
       } finally {
@@ -451,11 +428,10 @@ function Wayfarer() {
     return () => { cancelled = true; };
   }, [initialCampaigns]);
 
-  const arrivedGeoid = live.presence.geoid;
   useEffect(() => {
-    if (!saveReady || !arrivedGeoid) return;
-    setCampaigns((current) => updateCampaign(current, "live", (game) => recordSubdivisionVisit(game, arrivedGeoid)));
-  }, [arrivedGeoid, saveReady]);
+    if (!saveReady || !livePort) return;
+    setCampaigns((current) => updateCampaign(current, "live", (game) => recordCountyVisit(game, livePort)));
+  }, [livePort, saveReady]);
 
   const liveCampaign = campaigns.live;
   const trainingCampaign = campaigns.training;
@@ -485,14 +461,13 @@ function Wayfarer() {
     } finally {
       const fresh = initialCampaigns[target];
       if (target === "training") emptyTrainingSave.current = fresh;
-      const port = fresh.ports[0];
       setCampaigns((current) => ({ ...current, [target]: fresh }));
-      setCoordinators((current) => ({
-        ...current,
-        [target]: createDockingCoordinator({ id: port.id, coords: port.position }),
-      }));
-      setPositions((current) => ({ ...current, [target]: fresh.origin }));
-      setSelectedPortIds((current) => ({ ...current, [target]: port.id }));
+      if (target === "training") {
+        const port = fresh.ports[0];
+        setCoordinator(createDockingCoordinator({ id: port.id, coords: port.position }));
+        setTrainingPosition(fresh.origin);
+        setTrainingTarget(port.id);
+      }
       resetInProgress.current = false;
       setResetting(false);
       setResetMode(null);
@@ -501,7 +476,7 @@ function Wayfarer() {
 
   function mutate(action: (current: GameState) => GameState, success: string) {
     if (resetInProgress.current || contractSavingRef.current) return;
-    if (mode === "live" && !live.currentGeoid()) return;
+    if (mode === "live" && !live.currentPortId()) return;
     try {
       const base = campaignsRef.current[mode];
       const updated = action(base);
@@ -553,9 +528,9 @@ function Wayfarer() {
       }, start + elapsed);
     }
     const transition = resolveCoordinatorTransition(campaigns.training, next);
-    setPositions((current) => ({ ...current, training: selectedPort.position }));
+    setTrainingPosition(selectedPort.position);
     setCampaigns((current) => ({ ...current, training: transition.game }));
-    setCoordinators((current) => ({ ...current, training: transition.coordinator }));
+    setCoordinator(transition.coordinator);
     setNotice(`TRAINING QUALIFICATION COMPLETE · ${selectedPort.callsign}`);
     void Haptics.selectionAsync();
   }
@@ -564,11 +539,8 @@ function Wayfarer() {
     if (contractSavingRef.current || mode !== "training") return;
     const port = game.ports.find((candidate) => candidate.id === portId);
     if (!port) return;
-    setSelectedPortIds((current) => ({ ...current, training: portId }));
-    setCoordinators((current) => ({
-      ...current,
-      training: selectDockingTarget(current.training, { id: port.id, coords: port.position }),
-    }));
+    setTrainingTarget(portId);
+    setCoordinator((current) => selectDockingTarget(current, { id: port.id, coords: port.position }));
     void Haptics.selectionAsync();
     setTab("bridge");
   }
@@ -576,11 +548,11 @@ function Wayfarer() {
   function executeTrade(quote: MarketQuote, side: "buy" | "sell", quantity: number) {
     if (!dockedPort) return;
     const order = { portId: dockedPort.id, commodityId: quote.commodityId, side, quantity };
-    if (mode === "live" && live.currentGeoid() !== order.portId) return;
+    if (mode === "live" && (!livePort || live.currentPortId() !== order.portId)) return;
     mutate(
       (current) => {
         if (mode === "training") return trade(current, order);
-        const known = recordSubdivisionVisit(current, order.portId);
+        const known = recordCountyVisit(current, livePort!);
         const traded = trade({ ...known, dockedPortId: order.portId }, order);
         return { ...traded, dockedPortId: null };
       },
@@ -625,10 +597,10 @@ function Wayfarer() {
           <>
             <FlightScene
               vista={berthed ? "docked" : "flight"}
-              callsign={selectedPort.callsign}
-              title={mode === "live" && !pilotPort ? "North Coast Live" : placeName(selectedPort.name)}
+              callsign={mode === "training" ? selectedPort.callsign : undefined}
+              title={mode === "live" ? livePort?.name ?? "Live ports" : placeName(selectedPort.name)}
               status={mode === "live"
-                ? pilotPort ? placeName(pilotPort.countyName) + " · Current port" : "Humboldt and Del Norte"
+                ? livePort ? "Current port" : "Travel and trade"
                 : [selectedPort.callsign, trainingPlace ? placeName(trainingPlace) : null, berthed ? "Docked" : "Approach · " + formatDistance(selectedDistance)]
                   .filter(Boolean).join(" · ")}
             >
@@ -675,7 +647,7 @@ function Wayfarer() {
                   trackColor={{ false: COLORS.line, true: COLORS.frame }} value={mode === "training"} />
               </View>
               {mode === "live" && <Text style={styles.testContentNoticeText}>
-                Live uses your location on this device to find your port, show nearby ranges, and open the local market.
+                Live uses your location on this device to find your port. The first visit to a new region may require a download.
               </Text>}
             </View>
           </>
@@ -693,7 +665,7 @@ function Wayfarer() {
                 : "Choose a scenario to simulate the approach. Do not travel to these points."}
             </Text>
             {mode === "live" && !compassPosition && <Text style={styles.receiptLine}>
-              Port ranges are unavailable until you have a fresh, accurate location fix.
+              Port ranges need a fresh, accurate fix and downloaded port data.
             </Text>}
             {mode === "training" && <Text style={styles.receiptLine}>
               {game.discoveredPortIds.length} of {game.ports.length} scenarios visited
@@ -830,7 +802,7 @@ function Wayfarer() {
                 <Text style={styles.receiptLine}>
                   Live and Training have separate local saves for ship, cargo, markets, visits, contract and the last receipt.
                   Live saves remember visited ports and trades. Precise location fixes stay in memory.
-                  Older Live progress is retained separately, with ship, credits and cargo carried forward.
+                  Older Live saves are kept separately. Your ship, credits and cargo carry forward.
                   Training keeps its own save, including older scenarios.
                 </Text>
                 <Text style={styles.receiptLine}>Android manages app permissions and system backups separately.</Text>

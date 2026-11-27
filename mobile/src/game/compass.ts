@@ -19,7 +19,9 @@ export function trueBearing(from: Coordinates, to: Coordinates): number {
 
 type Point = [longitude: number, latitude: number];
 
-export function nearestBoundaryPoint(from: Coordinates, polygons: Point[][][]): Coordinates {
+export function nearestBoundaryPoint(from: Coordinates, polygons: Point[][][]): Coordinates;
+export function nearestBoundaryPoint(from: Coordinates, polygons: Point[][][], include: (a: Point, b: Point) => boolean): Coordinates | undefined;
+export function nearestBoundaryPoint(from: Coordinates, polygons: Point[][][], include?: (a: Point, b: Point) => boolean) {
   // A local latitude-adjusted plane determines the closest point on each short edge.
   // The displayed range and heading use the great circle to the winning point.
   const longitudeScale = Math.cos(from.latitude * radians);
@@ -28,6 +30,7 @@ export function nearestBoundaryPoint(from: Coordinates, polygons: Point[][][]): 
   for (const polygon of polygons) {
     for (const ring of polygon) {
       for (let index = 1; index < ring.length; index++) {
+        if (include && !include(ring[index - 1], ring[index])) continue;
         const [aLongitude, aLatitude] = ring[index - 1];
         const [bLongitude, bLatitude] = ring[index];
         const dx = (bLongitude - aLongitude) * longitudeScale;
@@ -47,7 +50,7 @@ export function nearestBoundaryPoint(from: Coordinates, polygons: Point[][][]): 
       }
     }
   }
-  if (!nearest) throw new RangeError("A port boundary must have a segment");
+  if (!nearest && !include) throw new RangeError("A port boundary must have a segment");
   return nearest;
 }
 

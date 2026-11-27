@@ -6,3 +6,4 @@ npm-debug.log*
 .env*
 /outputs/
 /work/
+/tools/__pycache__/

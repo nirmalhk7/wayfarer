@@ -1,17 +1,24 @@
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 const atlas = new URL("../mobile/src/territories/north-coast.json", import.meta.url);
 const territoryGeoJSON = readFileSync(atlas);
-const cousub = new URL("../mobile/src/territories/cousub/", import.meta.url);
-const portCatalog = readFileSync(new URL("catalog.json", cousub));
-const pilot = JSON.parse(readFileSync(new URL("pilot.json", cousub)));
-const boundaries = new Map(pilot.map(({ geoid, name, countyGeoid, countyName }) => [geoid, JSON.stringify({
-  geoid, name, countyGeoid, countyName,
-  encoding: "delta-polyline-lon-lat-1e6",
-  crs: "EPSG:4269",
-  polygons: JSON.parse(readFileSync(new URL(geoid + ".json", cousub))),
-})]));
+const release = "county2026-v1";
+const releaseDirectory = process.env.WAYFARER_ATLAS_DIR;
+const retired = JSON.stringify({ error: "Port definitions have moved to the versioned county atlas" });
+const immutable = { "Cache-Control": "public, max-age=31536000, immutable" };
+
+function asset(path) {
+  if (!releaseDirectory) return null;
+  try { return readFileSync(join(releaseDirectory, release, path)); }
+  catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw error;
+  }
+}
+
 const health = JSON.stringify({ status: "ok" });
 const unsupportedQuery = JSON.stringify({ error: "Query parameters are unsupported" });
 const methodNotAllowed = JSON.stringify({ error: "Method not allowed" });
@@ -36,10 +43,24 @@ const server = createServer((req, res) => {
   if (req.url === "/v1/territories") {
     return send(req, res, 200, territoryGeoJSON, "application/geo+json");
   }
-  if (req.url === "/v2/ports") return send(req, res, 200, portCatalog);
-  const portBoundary = /^\/v2\/ports\/(\d{10})\/boundary$/.exec(req.url);
-  const boundary = portBoundary && boundaries.get(portBoundary[1]);
-  if (boundary) return send(req, res, 200, boundary);
+  if (req.url === "/v2/ports" || /^\/v2\/ports\/\d{10}\/boundary$/.test(req.url)) {
+    return send(req, res, 410, retired);
+  }
+  const path = req.url.startsWith("/atlas/" + release + "/") ? req.url.slice(8 + release.length) : "";
+  if (/^(?:index|sources|counties)\.json$/.test(path)) {
+    const body = asset(path);
+    if (body) return send(req, res, 200, body, "application/json", immutable);
+  }
+  if (/^tiles\/-?\d{1,3}_-?\d{1,2}\.json$/.test(path)) {
+    const body = asset(path + ".gz");
+    if (body) {
+      const headers = { ...immutable, Vary: "Accept-Encoding" };
+      if (/(?:^|,\s*)gzip\s*(?:,|$)/i.test(req.headers["accept-encoding"] ?? "")) {
+        return send(req, res, 200, body, "application/json", { ...headers, "Content-Encoding": "gzip" });
+      }
+      return send(req, res, 200, gunzipSync(body), "application/json", headers);
+    }
+  }
   return send(req, res, 404, missing);
 });
 

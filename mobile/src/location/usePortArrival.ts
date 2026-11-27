@@ -2,21 +2,22 @@ import * as Location from "expo-location";
 import { useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
-import { placeName } from "../game/compass";
 import type { Coordinates } from "../game/engine";
-import { assessObservation, FIX_MAX_AGE_MS } from "../territories/subdivisions";
+import { atlas } from "../atlas/download";
+import { resolvePort, tileKey, type AtlasPort, type AtlasTile } from "../atlas/geometry";
+import { observationQuality, FIX_MAX_AGE_MS } from "../territories/subdivisions";
 
 const waiting = "Waiting for a fresh location fix";
-type Presence = { geoid: string | null; validUntil: number; status: string; position?: Coordinates };
-const paused: Presence = { geoid: null, validUntil: 0, status: "Live navigation paused" };
+type Presence = { port: AtlasPort | null; validUntil: number; status: string; position?: Coordinates; tile?: AtlasTile };
+const paused: Presence = { port: null, validUntil: 0, status: "Live navigation paused" };
 const status = {
   stale: "Location fix expired",
   poor: "Location accuracy is too low",
   border: "Near a port boundary. Market access paused.",
-  outside: "Outside the North Coast Live pilot",
+  outside: "No port confirmed here",
 };
 
-export function useSubdivisionArrival(enabled: boolean, attempt: number) {
+export function usePortArrival(enabled: boolean, attempt: number) {
   const [presence, setPresence] = useState(paused);
   const current = useRef(paused);
 
@@ -31,6 +32,7 @@ export function useSubdivisionArrival(enabled: boolean, attempt: number) {
     let removed = false;
     let prompt = true;
     let lastTimestamp = -Infinity;
+    let observations = 0;
     let watcher: Location.LocationSubscription | undefined;
     let expiry: ReturnType<typeof setTimeout> | undefined;
 
@@ -60,23 +62,43 @@ export function useSubdivisionArrival(enabled: boolean, attempt: number) {
         const now = Date.now();
         if (fix.timestamp <= lastTimestamp) return;
         if (Number.isFinite(fix.timestamp) && fix.timestamp <= now) lastTimestamp = fix.timestamp;
-        const result = assessObservation({
-          timestamp: fix.timestamp,
-          latitude: fix.coords.latitude,
-          longitude: fix.coords.longitude,
-          accuracy: fix.coords.accuracy,
-          mocked: fix.mocked,
+        const observation = ++observations;
+        const position = { latitude: fix.coords.latitude, longitude: fix.coords.longitude };
+        const quality = observationQuality({
+          ...position, timestamp: fix.timestamp, accuracy: fix.coords.accuracy, mocked: fix.mocked,
         }, now);
-        if (result.kind === "stale" || result.kind === "poor") {
-          publish({ ...paused, status: status[result.kind] });
+        if (quality.kind !== "usable") {
+          publish({ ...paused, status: status[quality.kind] });
           return;
         }
-        // A usable measurement powers the compass even when it grants no market access.
-        publish({
-          geoid: result.kind === "inside" ? result.port.geoid : null,
-          validUntil: fix.timestamp + FIX_MAX_AGE_MS,
-          position: { latitude: fix.coords.latitude, longitude: fix.coords.longitude },
-          status: result.kind === "inside" ? "Arrived in " + placeName(result.port.name) : status[result.kind],
+        const { radius } = quality;
+        const key = tileKey(position);
+        const validUntil = fix.timestamp + FIX_MAX_AGE_MS;
+        const isCurrent = () => !removed && id === run && observations === observation;
+        function arrive(tile: AtlasTile | null) {
+          if (!isCurrent()) return;
+          if (Date.now() >= validUntil) {
+            publish({ ...paused, status: status.stale });
+            return;
+          }
+          if (!tile) {
+            publish({ ...paused, status: "No port data covers this region" });
+            return;
+          }
+          const result = resolvePort(tile, position, radius);
+          publish({
+            port: result.kind === "inside" ? result.port : null, validUntil, position, tile,
+            status: result.kind === "inside" ? "Arrived in " + result.port.name : status[result.kind],
+          });
+        }
+        const cached = atlas.peek(key);
+        if (cached !== undefined) {
+          arrive(cached);
+          return;
+        }
+        publish({ ...paused, status: "Loading port data" });
+        void atlas.load(key).then(arrive).catch(() => {
+          if (isCurrent()) publish({ ...paused, status: "Port data unavailable. Connect to download this region." });
         });
       };
       try {
@@ -117,9 +139,11 @@ export function useSubdivisionArrival(enabled: boolean, attempt: number) {
     };
   }, [enabled, attempt]);
 
+  const fresh = enabled && Date.now() < presence.validUntil;
   return {
     presence: enabled ? presence : paused,
-    compassPosition: enabled && Date.now() < presence.validUntil ? presence.position : undefined,
-    currentGeoid: () => enabled && Date.now() < current.current.validUntil ? current.current.geoid : null,
+    compassPosition: fresh ? presence.position : undefined,
+    compassTile: fresh ? presence.tile : undefined,
+    currentPortId: () => enabled && Date.now() < current.current.validUntil ? current.current.port?.id : undefined,
   };
 }
