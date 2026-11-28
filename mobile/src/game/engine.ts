@@ -324,8 +324,12 @@ export function canDock(
   return distanceMeters(requirePort(game, portId).position, position) <= radiusMeters;
 }
 
+export function encounterDraw(key: string): number {
+  return nextRandom(hash(key)).value;
+}
+
 function encounterFor(game: GameState, portId: string, dockSequence: number): Encounter | null {
-  const value = nextRandom(hash(`${game.seed}:${portId}:encounter:${dockSequence}`)).value;
+  const value = encounterDraw(`${game.seed}:${portId}:encounter:${dockSequence}`);
   if (value > 0.38) return null;
   const types: Encounter["type"][] = ["pirates", "customs", "distress"];
   return {
