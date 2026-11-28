@@ -69,6 +69,7 @@ jobs:
         env:
           CI: 'true'
           EXPO_OFFLINE: '1'
+          EXPO_PUBLIC_WAYFARER_TRADE_URL: ${{ vars.WAYFARER_TRADE_URL }}
         run: bash mobile/tools/build-preview-apk.sh "$RUNNER_TEMP/wayfarer-apk" "$RUNNER_TEMP/atlas/county2026-v2"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

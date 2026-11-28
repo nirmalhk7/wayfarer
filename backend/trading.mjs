@@ -17,8 +17,11 @@ const choices = new Set(["evade", "stop", "surrender", "fight"]);
 const initial = () => ({ version: 0, game: createCountyCampaign(), journal: [] });
 
 function actionFrom(value) {
-  if (!value || !uuid.test(value.id) || !Number.isSafeInteger(value.version) || value.version < 0
-    || typeof value.portId !== "string" || !ranks.has(value.portId)) return null;
+  if (!value || !uuid.test(value.id) || !Number.isSafeInteger(value.version) || value.version < 0) return null;
+  if (value.kind === "reset" && Object.keys(value).length === 3) {
+    return { id: value.id, version: value.version, kind: "reset" };
+  }
+  if (typeof value.portId !== "string" || !ranks.has(value.portId)) return null;
   const common = { id: value.id, version: value.version, portId: value.portId };
   const keys = ["id", "version", "portId", "kind"];
   let action;
@@ -42,6 +45,7 @@ function actionFrom(value) {
 }
 
 function command(game, action) {
+  if (action.kind === "reset") return createCountyCampaign();
   const { portId } = action;
   if (action.kind === "arrive") {
     if (game.discoveredPortIds.includes(portId)) return game;
@@ -112,7 +116,7 @@ export function createTradingService(store) {
         try { game = command(state.game, action); }
         catch (error) { return { status: 422, body: { error: error.message } }; }
         const next = { version: state.version + 1, game,
-          journal: [...state.journal.slice(-127), { id: action.id, signature }] };
+          journal: [...(action.kind === "reset" ? [] : state.journal.slice(-127)), { id: action.id, signature }] };
         if (!await store.write(key, next, existing?.etag)) {
           return { status: 409, body: { error: "Market changed. Refresh your quotes." } };
         }

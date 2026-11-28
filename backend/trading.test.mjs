@@ -84,4 +84,12 @@ test("Live HTTP endpoints keep quotes, trades, idempotency and campaign data aut
   assert.equal((await live(sell)).status, 503);
   online = true;
   assert.deepEqual((await live()).body, sold);
+  const reset = { kind: "reset", version: sold.version, id: randomUUID() };
+  const cleared = (await live(reset)).body;
+  assert.equal(cleared.version, sold.version + 1);
+  assert.equal(cleared.player.credits, 900);
+  assert.deepEqual(cleared.markets, []);
+  assert.deepEqual((await live(reset)).body, cleared);
+  assert.equal((await live(null, { command: sell.id })).body.applied, false);
+  assert.equal((await live(sell)).status, 409);
 });

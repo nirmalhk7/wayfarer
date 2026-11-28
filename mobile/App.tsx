@@ -75,6 +75,7 @@ import {
 import { clearPersistedDockingCoordinator } from "./src/ui/dockingSessionStore";
 import { COCKPIT as COLORS } from "./src/ui/cockpitTheme";
 import { FlightScene } from "./src/ui/FlightScene";
+import { networkMarketAvailable, useServerMarket } from "./src/network/liveMarket";
 import { PortCompass, type PortReading } from "./src/ui/PortCompass";
 import { compassDirection, placeName } from "./src/game/compass";
 import { createNorthCoastTraining, NORTH_COAST_ORIGIN, territoryAt, usesNorthCoastTrainingMap } from "./src/territories/northCoast";
@@ -154,10 +155,11 @@ function BandPill({ band }: { band: PriceBand }) {
   );
 }
 
-function MarketRow({ quote, game, onOrder }: {
+function MarketRow({ quote, game, onOrder, disabled }: {
   quote: MarketQuote;
   game: GameState;
   onOrder: (side: "buy" | "sell", quantity: number) => void;
+  disabled?: boolean;
 }) {
   const commodity = COMMODITIES.find((item) => item.id === quote.commodityId)!;
   const [units, setUnits] = useState("1");
@@ -192,10 +194,10 @@ function MarketRow({ quote, game, onOrder }: {
             value={units}
           />
         </View>
-        <Button compact disabled={!canBuy} label={buyLabel}
+        <Button compact disabled={disabled || !canBuy} label={buyLabel}
           accessibilityLabel={`Buy ${commodity.name}${canBuy ? `, ${quote.ask * quantity} credits` : ""}`}
           onPress={() => onOrder("buy", quantity)} />
-        <Button compact disabled={!canSell} label={sellLabel}
+        <Button compact disabled={disabled || !canSell} label={sellLabel}
           accessibilityLabel={`Sell ${commodity.name}${canSell ? `, ${quote.bid * quantity} credits` : ""}`}
           onPress={() => onOrder("sell", quantity)} tone="ghost" />
       </View>
@@ -348,6 +350,8 @@ function Wayfarer() {
   }), []);
   const [campaigns, setCampaigns] = useState<Campaigns>(initialCampaigns);
   const [mode, setMode] = useState<CampaignMode>("training");
+  const networkLive = mode === "live" && networkMarketAvailable();
+  const remote = useServerMarket(networkLive);
   const [trainingPosition, setTrainingPosition] = useState<Coordinates>(NORTH_COAST_ORIGIN);
   const [trainingTarget, setTrainingTarget] = useState("port-0");
   const [coordinator, setCoordinator] = useState(() =>
@@ -387,13 +391,28 @@ function Wayfarer() {
     else await AsyncStorage.removeItem(key);
   }));
 
-  const game = campaigns[mode];
   const livePort = live.compassPosition ? live.presence.port : null;
+  const serverGame = useMemo(() => {
+    const synced = remote.snapshot;
+    if (!synced) return initialCampaigns.live;
+    const ports = synced.markets.map(({ id, market }) => ({
+      id, market, name: (livePort?.id === id ? livePort.name : campaigns.live.ports.find((port) => port.id === id)?.name)
+        ?? "Visited port",
+      callsign: id, position: initialCampaigns.live.origin,
+    }));
+    return {
+      ...initialCampaigns.live, ports, player: synced.player,
+      pendingLiveEncounter: synced.pendingLiveEncounter ?? undefined,
+      lastTrade: synced.lastTrade ?? undefined,
+      discoveredPortIds: ports.map(({ id }) => id),
+    };
+  }, [remote.snapshot, initialCampaigns, livePort, campaigns.live.ports]);
+  const game = networkLive ? serverGame : campaigns[mode];
   const selectedPort = campaigns.training.ports.find(({ id }) => id === trainingTarget) ?? campaigns.training.ports[0];
-  const pendingContact = campaigns.live.pendingLiveEncounter;
+  const pendingContact = (networkLive ? serverGame : campaigns.live).pendingLiveEncounter;
   const safeContact = mode === "live" && live.eligible && pendingContact?.portId === livePort?.id ? pendingContact : undefined;
   const liveMarket = live.eligible && livePort && !safeContact
-    ? campaigns.live.ports.find((port) => port.id === livePort.id) ?? null
+    ? game.ports.find((port) => port.id === livePort.id) ?? null
     : null;
   const dockedPort = mode === "live" ? liveMarket : activeDockedPort(game, coordinator);
   const berthed = mode === "live" ? Boolean(dockedPort) : dockedPort?.id === selectedPort.id;
@@ -468,8 +487,15 @@ function Wayfarer() {
     return () => { cancelled = true; };
   }, [initialCampaigns]);
 
+  const walkPortId = live.eligible ? livePort?.id : undefined;
   useEffect(() => {
-    if (!saveReady || !livePort || !live.eligible || live.eligiblePortId() !== livePort.id) return;
+    if (!networkLive || !walkPortId || !remote.snapshot || remote.busy || remote.pending || remote.status
+      || serverGame.discoveredPortIds.includes(walkPortId)) return;
+    void remote.perform({ kind: "arrive", portId: walkPortId }, undefined, () => live.eligiblePortId() === walkPortId);
+  }, [networkLive, walkPortId, remote.snapshot, remote.busy, remote.pending, remote.status, remote.perform, serverGame, live.eligiblePortId]);
+
+  useEffect(() => {
+    if (networkLive || !saveReady || !livePort || !live.eligible || live.eligiblePortId() !== livePort.id) return;
     if (campaignsRef.current.live.discoveredPortIds.includes(livePort.id)) {
       setCampaigns((current) => updateCampaign(current, "live", (game) => recordCountyVisit(game, livePort)));
       return;
@@ -486,7 +512,7 @@ function Wayfarer() {
       }));
     });
     return () => { cancelled = true; };
-  }, [livePort, live.eligible, saveReady, contactSaving]);
+  }, [networkLive, livePort, live.eligible, saveReady, contactSaving]);
 
   const liveCampaign = campaigns.live;
   const trainingCampaign = campaigns.training;
@@ -503,10 +529,19 @@ function Wayfarer() {
   }, [trainingCampaign, saveReady]);
 
   async function resetCampaign() {
-    if (!resetMode || resetInProgress.current || contractSavingRef.current || contactSavingRef.current) return;
+    if (!resetMode || resetInProgress.current || contractSavingRef.current || contactSavingRef.current || (networkLive && remote.busy)) return;
     const target = resetMode;
     resetInProgress.current = true;
     setResetting(true);
+    if (target === "live" && networkLive) {
+      const confirmed = remote.pending?.kind === "reset" ? await remote.perform() : await remote.perform({ kind: "reset" });
+      if (!confirmed) {
+        setNotice("RESET INCOMPLETE · RECONNECT TO THE TRADE SERVER");
+        resetInProgress.current = false;
+        setResetting(false);
+        return;
+      }
+    }
     if (target === "live") setLiveRequested(false);
     try {
       await (target === "live" ? liveSaveQueue : trainingSaveQueue).current.writeThrough(null);
@@ -604,6 +639,13 @@ function Wayfarer() {
     if (!dockedPort) return;
     const order = { portId: dockedPort.id, commodityId: quote.commodityId, side, quantity };
     if (mode === "live" && (!livePort || live.eligiblePortId() !== order.portId)) return;
+    if (networkLive) {
+      if (safeContact || remote.pending || remote.busy) return;
+      void remote.perform({
+        ...order, kind: "trade", unitPrice: side === "buy" ? quote.ask : quote.bid,
+      }, undefined, () => AppState.currentState === "active" && live.eligiblePortId() === order.portId);
+      return;
+    }
     mutate(
       (current) => {
         if (mode === "training") return trade(current, order);
@@ -618,6 +660,12 @@ function Wayfarer() {
   async function chooseLiveContact(contact: Encounter, choice: LiveContactChoice) {
     if (mode !== "live" || AppState.currentState !== "active" || resetInProgress.current || contactSavingRef.current
       || live.eligiblePortId() !== contact.portId) return;
+    if (networkLive) {
+      if (remote.pending || remote.busy) return;
+      void remote.perform({ kind: "contact", portId: contact.portId, choice }, undefined,
+        () => AppState.currentState === "active" && live.eligiblePortId() === contact.portId);
+      return;
+    }
     const current = campaignsRef.current.live;
     if (current.pendingLiveEncounter !== contact) return;
     const next = resolveLiveContact(current, contact.portId, choice);
@@ -636,6 +684,18 @@ function Wayfarer() {
       contactSavingRef.current = false;
       setContactSaving(false);
     }
+  }
+
+  function installUpgrade(upgrade: "cargo" | "hull") {
+    if (networkLive) {
+      const portId = dockedPort?.id;
+      if (!portId || remote.pending || remote.busy) return;
+      void remote.perform({ kind: "upgrade", portId, upgrade }, undefined,
+        () => AppState.currentState === "active" && live.eligiblePortId() === portId);
+      return;
+    }
+    mutate((current) => buyUpgrade(current, upgrade),
+      upgrade === "cargo" ? "CARGO PODS INSTALLED · 4 SLOTS ADDED" : "HULL PLATING INSTALLED");
   }
 
   function handleEncounter(choice: "run" | "pay" | "fight" | "help") {
@@ -730,7 +790,9 @@ function Wayfarer() {
                   trackColor={{ false: COLORS.line, true: COLORS.frame }} value={mode === "training"} />
               </View>
               {mode === "live" && <Text style={styles.testContentNoticeText}>
-                Live uses your location on this device to find your port.
+                {networkLive
+                  ? "Live markets require a connection. Your phone keeps precise location fixes on-device."
+                  : "Live uses your location on this device to find your port."}
               </Text>}
             </View>
           </>
@@ -777,6 +839,13 @@ function Wayfarer() {
             {dockedPort && <FlightScene vista="market" title={placeName(dockedPort.name)}
               status={"Concourse · " + game.player.credits + " CR available"} />}
             <View style={styles.pageBody}>
+              {networkLive && <View style={styles.receipt}>
+                <Text style={styles.receiptLine}>{remote.status || (remote.busy ? "Contacting the trade server…"
+                  : "Live balances and prices are saved on the trade server.")}</Text>
+                {(remote.status || remote.pending) && <Button label="Reconnect to trade server" tone="ghost" disabled={remote.busy}
+                  onPress={() => { void remote.perform(undefined, walkPortId,
+                    () => Boolean(walkPortId && live.eligiblePortId() === walkPortId)); }} />}
+              </View>}
               {dockedPort ? (
                 <View style={styles.counterChoices}>
                   {mode === "training" && <Button compact label="Contract desk" accessibilityLabel="Open contract desk"
@@ -809,9 +878,10 @@ function Wayfarer() {
                   <SectionHeader title="Trade counter" />
                   {dockedPort.market.map((quote) => (
                     <MarketRow key={mode + "-" + dockedPort.id + "-" + quote.commodityId}
-                      game={game} onOrder={(side, quantity) => executeTrade(quote, side, quantity)} quote={quote} />
+                      game={game} disabled={networkLive && (remote.busy || !!remote.pending || !!remote.status)}
+                      onOrder={(side, quantity) => executeTrade(quote, side, quantity)} quote={quote} />
                   ))}
-                  <Text style={styles.spreadNote}>Station prices are local to this save.</Text>
+                  <Text style={styles.spreadNote}>{networkLive ? "Orders use the latest verified server quote." : "Station prices are local to this save."}</Text>
                 </View>
               )}
             </View>
@@ -845,12 +915,9 @@ function Wayfarer() {
                       <Text style={styles.upgradeCopy}>{benefit} · {cost} cr</Text>
                       {shortfall > 0 && <Text style={styles.upgradeCopy}>{shortfall} cr short</Text>}
                     </View>
-                    <Button compact disabled={shortfall > 0 || (mode === "live" && !dockedPort)} label="Install"
+                    <Button compact disabled={shortfall > 0 || (mode === "live" && !dockedPort) || (networkLive && (remote.busy || !!remote.pending))} label="Install"
                       accessibilityLabel={`${label}, ${cost} credits`}
-                      onPress={() => mutate(
-                        (current) => buyUpgrade(current, id),
-                        id === "cargo" ? "CARGO PODS INSTALLED · 4 SLOTS ADDED" : "HULL PLATING INSTALLED",
-                      )} />
+                      onPress={() => installUpgrade(id)} />
                   </View>
                 );
               })}
@@ -871,8 +938,8 @@ function Wayfarer() {
               <SectionHeader title="Local game data" />
               <View style={styles.receipt}>
                 <Text style={styles.receiptLine}>
-                  Live and Training have separate local saves for ship, cargo, markets, visits, contract and the last receipt.
-                  Live saves remember visited ports and trades. Precise location fixes stay in memory.
+                  {networkLive ? "The trade server saves this Live campaign, including ports and trades. Training and any earlier offline save remain on this device. Precise fixes stay in memory."
+                    : "Live and Training have separate local saves. Live saves remember visited ports and trades. Precise location fixes stay in memory."}
                   Older Live saves are kept separately. Your ship, credits and cargo carry forward.
                   Training keeps its own save, including older scenarios.
                 </Text>
@@ -925,7 +992,7 @@ function Wayfarer() {
       </Modal>
       <EncounterModal game={game} onResolve={handleEncounter} />
       {safeContact && dismissedContact !== safeContact.portId && <LiveContactAlert
-        contact={safeContact} saving={contactSaving}
+        contact={safeContact} saving={contactSaving || (networkLive && remote.busy)}
         onChoice={(choice) => { void chooseLiveContact(safeContact, choice); }}
         onLater={() => { if (!contactSavingRef.current) setDismissedContact(safeContact.portId); }}
       />}

@@ -1,4 +1,4 @@
-import { BlobPreconditionFailedError, get, list, put } from "@vercel/blob";
+import { BlobPreconditionFailedError, get, put } from "@vercel/blob";
 
 const namespace = "wayfarer-live-v1/";
 const path = (key) => namespace + key + ".json";
@@ -6,7 +6,10 @@ const timeout = () => AbortSignal.timeout(6_000);
 
 export const blobStore = {
   async check() {
-    await list({ limit: 1, prefix: namespace, abortSignal: timeout() });
+    const probe = await get(namespace + "health-probe", {
+      access: "private", useCache: false, abortSignal: timeout(),
+    });
+    await probe?.stream?.cancel();
   },
   async read(key) {
     const response = await get(path(key), { access: "private", useCache: false, abortSignal: timeout() });

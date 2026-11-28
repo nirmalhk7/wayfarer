@@ -13,6 +13,7 @@ import { AccessibilityInfo, Animated, AppState, Share } from "react-native";
 
 import "../index";
 import { resolveLiveContact, type LiveContactChoice } from "../src/game/liveEncounters";
+import { createCountyPort } from "../src/game/countyCampaign";
 import { createGame } from "../src/game/engine";
 import { decodeGameState, encodeGameState, LEGACY_STORAGE_KEY, LIVE_RESET_MARKER, COUNTY_LIVE_STORAGE_KEY, storageKeyForMode } from "../src/persistence";
 import { createDockingCoordinator } from "../src/ui/dockingCoordinator";
@@ -32,6 +33,9 @@ jest.mock("expo-file-system/legacy", () => ({
 }));
 jest.mock("expo-crypto", () => ({
   CryptoDigestAlgorithm: { SHA256: "SHA-256" },
+  randomUUID: jest.requireActual<typeof import("node:crypto")>("node:crypto").randomUUID,
+  getRandomBytesAsync: async (length: number) =>
+    jest.requireActual<typeof import("node:crypto")>("node:crypto").randomBytes(length),
   digestStringAsync: async (_algorithm: unknown, value: string) =>
     jest.requireActual<typeof import("./atlas-fixture")>("./atlas-fixture").sha256(value),
 }));
@@ -747,5 +751,94 @@ const nationalAtlas = process.env.WAYFARER_ATLAS_TEST_DATA;
   } finally {
     downloaded.restart();
     fileRead.mockReset();
+  }
+});
+
+
+test("the registered Live app only applies a recorded server buy and recovers a lost response", async () => {
+  const original = process.env.EXPO_PUBLIC_WAYFARER_TRADE_URL;
+  process.env.EXPO_PUBLIC_WAYFARER_TRADE_URL = "https://wayfarer.example.test";
+  const time = jest.spyOn(Date, "now");
+  let now = 8_000_000;
+  time.mockImplementation(() => now);
+  const buyIds: string[] = [];
+  const base = createCountyPort({ id: "county:06081", name: "San Mateo" });
+  const ask = base.market.find((quote) => quote.commodityId === "ion_fuel")!.ask;
+  const startingCredits = 701;
+  const player = { credits: startingCredits, cargoCapacity: 8, cargo: {} as Record<string, number>, hull: 3, maxHull: 3 };
+  const snapshot = { version: 0, player, markets: [] as { id: string; market: typeof base.market }[],
+    pendingLiveEncounter: null, lastTrade: null };
+  let listener: Location.LocationCallback | undefined;
+  const fix = (step = 0) => ({
+    timestamp: now,
+    coords: {
+      latitude: 37.5585 + step * .000068, longitude: -122.2711, accuracy: 5, speed: 1.5,
+      altitude: null, altitudeAccuracy: null, heading: null,
+    },
+  });
+  jest.mocked(Location.requestForegroundPermissionsAsync).mockResolvedValueOnce({
+    status: Location.PermissionStatus.GRANTED, granted: true, canAskAgain: true, expires: "never",
+  });
+  jest.mocked(Location.watchPositionAsync).mockImplementationOnce(async (_options, callback) => {
+    listener = callback;
+    return { remove: jest.fn() };
+  });
+  jest.mocked(Location.getCurrentPositionAsync).mockResolvedValueOnce(fix());
+  downloaded.offline(false);
+  downloaded.restart();
+
+  const request = jest.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+    expect(input).toBe("https://wayfarer.example.test/v1/live");
+    const headers = options?.headers as Record<string, string>;
+    expect(headers.Authorization).toMatch(/^Bearer [a-f0-9]{64}$/);
+    const body = options?.body ? JSON.parse(String(options.body)) : null;
+    if (body?.kind === "arrive") {
+      expect(Object.keys(body).sort()).toEqual(["id", "kind", "portId", "version"]);
+      expect(body.portId).toBe(base.id);
+      snapshot.markets = [{ id: base.id, market: base.market }];
+      snapshot.version++;
+    } else if (body?.kind === "trade") {
+      expect(body).toEqual({ kind: "trade", id: expect.any(String), version: 1,
+        portId: base.id, quantity: 1, side: "buy", commodityId: "ion_fuel", unitPrice: ask });
+      buyIds.push(body.id);
+      snapshot.version++;
+      player.credits -= ask;
+      player.cargo.ion_fuel = 1;
+      throw new Error("Order saved but response lost");
+    }
+    const applied = buyIds.includes(headers["X-Wayfarer-Command"]);
+    return { ok: true, json: async () => structuredClone({ ...snapshot, applied }) } as Response;
+  });
+
+  try {
+    const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
+    await render(<RegisteredApp />);
+    await screen.findByRole("switch", { name: "Training simulator" });
+    expect(request).not.toHaveBeenCalled();
+    await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", false);
+    await press("Start live navigation");
+    await screen.findByText("Arrived in San Mateo");
+    const walk = jest.mocked(Location.watchMotionActivityAsync).mock.calls.at(-1)![0];
+    const activities = Object.fromEntries(["automotive", "cycling", "running", "walking", "stationary", "unknown"]
+      .map((name) => [name, { detected: name === "walking", confidence: name === "walking" ? 2 : 0 }])) as Location.MotionActivityObject["activities"];
+    for (let step = 0; step <= 4; step++) {
+      now += 5_000;
+      await act(async () => {
+        walk({ activities, timestamp: now });
+        listener!(fix(step));
+      });
+    }
+    await tab("Station");
+    await screen.findByRole("button", { name: `Buy Ion Fuel, ${ask} credits` });
+    await press(`Buy Ion Fuel, ${ask} credits`);
+    await screen.findByText("Connect to the trade server to use Live markets.");
+    expect(screen.getAllByText(/In hold 0/).length).toBeGreaterThan(0);
+    await press("Reconnect to trade server");
+    await waitFor(() => expect(screen.getByText(/In hold 1/)).toBeTruthy());
+    expect(buyIds).toHaveLength(1);
+    expect(await AsyncStorage.getItem(COUNTY_LIVE_STORAGE_KEY)).toBeNull();
+  } finally {
+    if (original === undefined) delete process.env.EXPO_PUBLIC_WAYFARER_TRADE_URL;
+    else process.env.EXPO_PUBLIC_WAYFARER_TRADE_URL = original;
   }
 });
