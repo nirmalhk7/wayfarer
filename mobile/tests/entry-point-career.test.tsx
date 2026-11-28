@@ -14,7 +14,7 @@ import { AccessibilityInfo, Animated, AppState, Share } from "react-native";
 import "../index";
 import { resolveLiveContact, type LiveContactChoice } from "../src/game/liveEncounters";
 import { createCountyPort } from "../src/game/countyCampaign";
-import { createGame } from "../src/game/engine";
+import { createGame, type TradeReceipt } from "../src/game/engine";
 import { decodeGameState, encodeGameState, LEGACY_STORAGE_KEY, LIVE_RESET_MARKER, COUNTY_LIVE_STORAGE_KEY, storageKeyForMode } from "../src/persistence";
 import { createDockingCoordinator } from "../src/ui/dockingCoordinator";
 import { DOCKING_SESSION_STORAGE_KEY, persistDockingCoordinator } from "../src/ui/dockingSessionStore";
@@ -755,19 +755,24 @@ const nationalAtlas = process.env.WAYFARER_ATLAS_TEST_DATA;
 });
 
 
-test("the registered Live app only applies a recorded server buy and recovers a lost response", async () => {
+test.each(["before commit", "after commit"] as const)("the registered Live app recovers a buy interrupted %s and can then sell", async (interrupted) => {
   const original = process.env.EXPO_PUBLIC_WAYFARER_TRADE_URL;
   process.env.EXPO_PUBLIC_WAYFARER_TRADE_URL = "https://wayfarer.example.test";
   const time = jest.spyOn(Date, "now");
   let now = 8_000_000;
   time.mockImplementation(() => now);
-  const buyIds: string[] = [];
+  const buyRequests: string[] = [];
+  const receiptLookups: string[] = [];
+  const appliedIds = new Set<string>();
   const base = createCountyPort({ id: "county:06081", name: "San Mateo" });
-  const ask = base.market.find((quote) => quote.commodityId === "ion_fuel")!.ask;
+  const fuel = base.market.find((quote) => quote.commodityId === "ion_fuel")!;
+  const { ask, stock } = fuel;
+  const bidAfterBuy = fuel.bid + 1;
+  const pendingKey = "wayfarer.mobile.server-market.pending.v1";
   const startingCredits = 701;
   const player = { credits: startingCredits, cargoCapacity: 8, cargo: {} as Record<string, number>, hull: 3, maxHull: 3 };
   const snapshot = { version: 0, player, markets: [] as { id: string; market: typeof base.market }[],
-    pendingLiveEncounter: null, lastTrade: null };
+    pendingLiveEncounter: null, lastTrade: null as TradeReceipt | null };
   let listener: Location.LocationCallback | undefined;
   const fix = (step = 0) => ({
     timestamp: now,
@@ -791,23 +796,42 @@ test("the registered Live app only applies a recorded server buy and recovers a 
     expect(input).toBe("https://wayfarer.example.test/v1/live");
     const headers = options?.headers as Record<string, string>;
     expect(headers.Authorization).toMatch(/^Bearer [a-f0-9]{64}$/);
-    const body = options?.body ? JSON.parse(String(options.body)) : null;
+    const encoded = options?.body ? String(options.body) : "";
+    const body = encoded ? JSON.parse(encoded) : null;
     if (body?.kind === "arrive") {
       expect(Object.keys(body).sort()).toEqual(["id", "kind", "portId", "version"]);
       expect(body.portId).toBe(base.id);
       snapshot.markets = [{ id: base.id, market: base.market }];
       snapshot.version++;
-    } else if (body?.kind === "trade") {
+    } else if (body?.kind === "trade" && body.side === "buy") {
       expect(body).toEqual({ kind: "trade", id: expect.any(String), version: 1,
-        portId: base.id, quantity: 1, side: "buy", commodityId: "ion_fuel", unitPrice: ask });
-      buyIds.push(body.id);
+        portId: base.id, quantity: 2, side: "buy", commodityId: "ion_fuel", unitPrice: ask });
+      expect(await AsyncStorage.getItem(pendingKey)).toBe(encoded);
+      buyRequests.push(encoded);
+      if (buyRequests.length === 1 && interrupted === "before commit") throw new Error("Order never reached the server");
       snapshot.version++;
-      player.credits -= ask;
-      player.cargo.ion_fuel = 1;
-      throw new Error("Order saved but response lost");
+      player.credits -= 2 * ask;
+      player.cargo.ion_fuel = 2;
+      fuel.stock -= 2;
+      fuel.bid = bidAfterBuy;
+      appliedIds.add(body.id);
+      snapshot.lastTrade = { portId: base.id, quantity: 2, side: "buy", commodityId: "ion_fuel", unitPrice: ask, costBasis: 2 * ask };
+      if (interrupted === "after commit") throw new Error("Order saved but response lost");
+    } else if (body?.kind === "trade") {
+      expect(body).toEqual({ kind: "trade", id: expect.any(String), version: 2,
+        portId: base.id, quantity: 1, side: "sell", commodityId: "ion_fuel", unitPrice: bidAfterBuy });
+      expect(appliedIds.has(body.id)).toBe(false);
+      snapshot.version++;
+      player.credits += bidAfterBuy;
+      player.cargo.ion_fuel--;
+      fuel.stock++;
+      snapshot.lastTrade = { portId: base.id, quantity: 1, side: "sell", commodityId: "ion_fuel",
+        unitPrice: bidAfterBuy, costBasis: ask };
     }
-    const applied = buyIds.includes(headers["X-Wayfarer-Command"]);
-    return { ok: true, json: async () => structuredClone({ ...snapshot, applied }) } as Response;
+    const command = headers["X-Wayfarer-Command"];
+    if (command) receiptLookups.push(command);
+    const response = structuredClone(command ? { ...snapshot, applied: appliedIds.has(command) } : snapshot);
+    return { ok: true, json: async () => response } as Response;
   });
 
   try {
@@ -830,12 +854,28 @@ test("the registered Live app only applies a recorded server buy and recovers a 
     }
     await tab("Station");
     await screen.findByRole("button", { name: `Buy Ion Fuel, ${ask} credits` });
-    await press(`Buy Ion Fuel, ${ask} credits`);
+    await fireEvent.changeText(screen.getByLabelText("Ion Fuel units"), "2");
+    await press(`Buy Ion Fuel, ${2 * ask} credits`);
     await screen.findByText("Connect to the trade server to use Live markets.");
-    expect(screen.getAllByText(/In hold 0/).length).toBeGreaterThan(0);
+    expect(screen.getByText(new RegExp(`^Stock ${stock} · In hold 0 ·`))).toBeTruthy();
+    expect(screen.getByText(`Concourse · ${startingCredits} CR available`)).toBeTruthy();
+    expect(screen.queryByText("Last trade receipt")).toBeNull();
+    expect(screen.getByRole("button", { name: `Buy Ion Fuel, ${2 * ask} credits` })).toBeDisabled();
+    expect(await AsyncStorage.getItem(pendingKey)).toBe(buyRequests[0]);
     await press("Reconnect to trade server");
-    await waitFor(() => expect(screen.getByText(/In hold 1/)).toBeTruthy());
-    expect(buyIds).toHaveLength(1);
+    await screen.findByText("Bought 2 × Ion Fuel at San Mateo");
+    expect(screen.getByText(new RegExp(`^Stock ${stock - 2} · In hold 2 ·`))).toBeTruthy();
+    expect(screen.getByText(`Concourse · ${startingCredits - 2 * ask} CR available`)).toBeTruthy();
+    expect(buyRequests).toEqual(Array(interrupted === "before commit" ? 2 : 1).fill(buyRequests[0]));
+    expect(receiptLookups).toEqual([JSON.parse(buyRequests[0]).id]);
+    await waitFor(async () => expect(await AsyncStorage.getItem(pendingKey)).toBeNull());
+
+    await fireEvent.changeText(screen.getByLabelText("Ion Fuel units"), "1");
+    await press(`Sell Ion Fuel, ${bidAfterBuy} credits`);
+    await screen.findByText("Sold 1 × Ion Fuel at San Mateo");
+    expect(screen.getByText(new RegExp(`^Stock ${stock - 1} · In hold 1 ·`))).toBeTruthy();
+    expect(screen.getByText(`Concourse · ${startingCredits - 2 * ask + bidAfterBuy} CR available`)).toBeTruthy();
+    await waitFor(async () => expect(await AsyncStorage.getItem(pendingKey)).toBeNull());
     expect(await AsyncStorage.getItem(COUNTY_LIVE_STORAGE_KEY)).toBeNull();
   } finally {
     if (original === undefined) delete process.env.EXPO_PUBLIC_WAYFARER_TRADE_URL;
