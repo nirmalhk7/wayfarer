@@ -1,9 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "npm ci --include=dev && npm run bundle:vercel",
+  "installCommand": "npm ci --include=dev && npm run bundle:vercel -- --check",
   "rewrites": [
     { "source": "/health", "destination": "/api/health" },
     { "source": "/v1/live", "destination": "/api/live" }
-  ]
+  ],
+  "functions": {
+    "api/*.mjs": { "includeFiles": "generated/trading-http.mjs" }
+  }
 }
