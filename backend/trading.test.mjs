@@ -54,24 +54,44 @@ test("Live HTTP endpoints keep quotes, trades, idempotency and campaign data aut
   assert.equal((await live({ ...order, quantity: 0 })).status, 400);
   assert.equal((await live({ ...order, unitPrice: 1 })).status, 422);
   assert.equal((await live({ ...order, quantity: 1000 })).status, 422);
-  const results = await Promise.all([live(order), live({ ...order, id: randomUUID() })]);
+  const contenders = [order, { ...order, id: randomUUID() }];
+  const results = await Promise.all(contenders.map((candidate) => live(candidate)));
   assert.deepEqual(results.map((reply) => reply.status).sort(), [200, 409]);
+  const winner = results.findIndex((reply) => reply.status === 200);
+  const winning = contenders[winner];
+  const rejected = contenders[1 - winner];
   const bought = (await live()).body;
+  assert.deepEqual(bought, results[winner].body);
+  assert.equal(bought.version, player.version + 1);
   assert.equal(bought.player.cargo.ion_fuel, 2);
   assert.equal(bought.player.credits, player.player.credits - 2 * quote.ask);
   assert.equal(bought.markets[0].market.find((item) => item.commodityId === "ion_fuel").stock, quote.stock - 2);
 
-  const winning = results[0].status === 200 ? order : null;
-  const receipt = (await live(null, { command: order.id })).body;
-  assert.equal(receipt.applied, Boolean(winning));
-  assert.equal((await live(order)).status, winning ? 200 : 409);
-  if (winning) assert.equal((await live({ ...order, quantity: 1 })).status, 409);
+  assert.deepEqual((await live(null, { command: winning.id })).body, { ...bought, applied: true });
+  assert.deepEqual((await live(null, { command: rejected.id })).body, { ...bought, applied: false });
+  const storedBuy = structuredClone([...storage.values()]);
+  assert.deepEqual(await live(winning), { status: 200, body: bought });
+  assert.equal((await live(rejected)).status, 409);
+  assert.equal((await live({ ...winning, quantity: 1 })).status, 409);
+  assert.deepEqual([...storage.values()], storedBuy);
+  assert.deepEqual((await live()).body, bought);
   const bid = bought.markets[0].market.find((item) => item.commodityId === "ion_fuel").bid;
   const sell = run(bought.version, "trade", { commodityId: "ion_fuel", side: "sell", quantity: 1, unitPrice: bid });
   assert.equal((await live({ ...sell, quantity: 3 })).status, 422);
-  const sold = (await live(sell)).body;
+  const sale = await live(sell);
+  assert.equal(sale.status, 200);
+  const sold = sale.body;
+  assert.equal(sold.version, bought.version + 1);
   assert.equal(sold.player.cargo.ion_fuel, 1);
   assert.equal(sold.player.credits, bought.player.credits + bid);
+  assert.equal(sold.markets[0].market.find((item) => item.commodityId === "ion_fuel").stock, quote.stock - 1);
+  assert.deepEqual(sold.lastTrade, { portId, side: "sell", commodityId: "ion_fuel", quantity: 1,
+    unitPrice: bid, costBasis: quote.ask });
+  const storedSale = structuredClone([...storage.values()]);
+  assert.deepEqual(await live(winning), { status: 200, body: sold });
+  assert.deepEqual(await live(sell), { status: 200, body: sold });
+  assert.deepEqual([...storage.values()], storedSale);
+  assert.deepEqual((await live()).body, sold);
   assert.deepEqual((await live(null, { token: "b".repeat(64) })).body, {
     version: 0, player: { credits: 900, cargoCapacity: 8, cargo: {}, hull: 3, maxHull: 3 },
     markets: [], pendingLiveEncounter: null, lastTrade: null,
