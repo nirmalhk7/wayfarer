@@ -4,7 +4,7 @@ Use a dedicated Vercel project linked to `nirmalhk7/wayfarer`, with `main` as
 the production branch and `backend` as the root directory. Enable inclusion
 of source files outside the root directory so the functions can import the
 shared economy and pinned ranks at build time. Use Node.js 24. The Vercel
-install command runs `npm ci --include=dev && npm run build` to package the
+install command runs `npm ci --include=dev && npm run bundle:vercel` to package the
 shared economy and ranks inside the backend. The generated handler needs no
 sibling source files at runtime.
 
