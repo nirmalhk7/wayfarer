@@ -102,7 +102,13 @@ def main(apk):
     shell("cmd", "location", "set-location-enabled", "true")
     assert shell("settings", "get", "global", "airplane_mode_on") == "1"
     assert shell("settings", "get", "global", "wifi_on") == "0"
-    assert shell("settings", "get", "global", "mobile_data") == "0"
+    for _ in range(20):
+        connectivity = shell("dumpsys", "connectivity")
+        if re.search(r"^Active default network: (?:none|null) *$", connectivity, re.M):
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError("Android still reports an active default network")
     print("Offline Android API", shell("getprop", "ro.build.version.sdk"), flush=True)
     assert b"Success" in adb("install", apk, timeout=120)
     assert shell("pm", "path", PACKAGE).startswith("package:")
