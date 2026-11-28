@@ -74,3 +74,18 @@ cd android
 
 The repository's MVP APK is signed with Android's debug key for direct testing.
 Create a private production keystore before Play Store distribution.
+
+## GitHub APK previews
+
+[Android APK preview](https://github.com/nirmalhk7/wayfarer/actions/workflows/android-preview.yml)
+builds after pushes to `main`. A manual run also requires `main`. The action runs
+the app and backend tests, builds a standalone Android APK, and checks its
+signing certificate, application ID, embedded bundle, and SHA-256 checksum.
+The release job downloads and checks the GitHub assets before it publishes
+a prerelease tagged `android-preview-<commit SHA>`.
+
+Download the APK and checksum from [GitHub Releases](https://github.com/nirmalhk7/wayfarer/releases).
+These sideload previews use the pinned public Expo template debug certificate.
+Installs signed with another key need to be removed before installing the preview,
+which removes their local saves. The APK includes offline Training. Live requires
+a separate build configured with a hosted atlas.

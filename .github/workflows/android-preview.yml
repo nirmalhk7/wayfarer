@@ -1,0 +1,109 @@
+name: Android APK preview
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: android-preview-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install locked dependencies
+        run: npm ci --prefix mobile
+      - name: Check app entry point and backend
+        run: npm test
+      - name: Prepare Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+      - name: Assemble and verify the signed preview APK
+        env:
+          CI: 'true'
+          EXPO_OFFLINE: '1'
+        run: bash mobile/tools/build-preview-apk.sh "$RUNNER_TEMP/wayfarer-apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: wayfarer-android-preview
+          path: ${{ runner.temp }}/wayfarer-apk/
+          if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: wayfarer-android-preview
+          path: ${{ runner.temp }}/wayfarer-apk
+      - name: Verify and publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ${{ runner.temp }}/wayfarer-apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$GITHUB_EVENT_NAME" == push || "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          apk=Wayfarer-android-preview.apk
+          checksum="$apk.sha256"
+          sha256sum -c "$checksum"
+          tag="android-preview-$GITHUB_SHA"
+          repo="$GITHUB_REPOSITORY"
+
+          if gh release view "$tag" --repo "$repo" --json isDraft,targetCommitish > release.json 2>/dev/null; then
+            # An already published release is immutable from this workflow.
+            if jq -e '.isDraft == false' release.json >/dev/null; then
+              test "$(gh api "repos/$repo/git/ref/tags/$tag" --jq .object.sha)" = "$GITHUB_SHA"
+              gh release download "$tag" --repo "$repo" --pattern "$apk" --pattern "$checksum" --dir existing
+              (cd existing && sha256sum -c "$checksum")
+              printf 'Verified existing release: %s/%s/releases/tag/%s\n' "$GITHUB_SERVER_URL" "$repo" "$tag"
+              exit 0
+            fi
+            jq -e --arg sha "$GITHUB_SHA" '.isDraft and .targetCommitish == $sha' release.json >/dev/null
+          else
+            cat > notes.md <<NOTES
+          Android sideload preview built from main commit $GITHUB_SHA by [GitHub Actions]($GITHUB_SERVER_URL/$repo/actions/runs/$GITHUB_RUN_ID).
+
+          Download **$apk** and its SHA-256 file. The APK includes the game bundle and can run Training offline. Live requires a separately hosted atlas and a build configured to use it.
+
+          This release uses the standard public Expo/React Native debug signing key for preview installs. It is not production signing. An existing install signed with a different key must be uninstalled before installing this APK. Uninstalling removes local saves.
+          NOTES
+            gh release create "$tag" --repo "$repo" --draft --prerelease --target "$GITHUB_SHA" \
+              --title "Wayfarer Android preview ${GITHUB_SHA:0:12}" --notes-file notes.md
+          fi
+
+          gh release upload "$tag" --repo "$repo" --clobber "$apk" "$checksum"
+          # Read back the two uploaded assets before publishing the draft.
+          gh release download "$tag" --repo "$repo" --pattern "$apk" --pattern "$checksum" --dir uploaded
+          cmp "$checksum" "uploaded/$checksum"
+          (cd uploaded && sha256sum -c "$checksum")
+          gh release edit "$tag" --repo "$repo" --draft=false --prerelease --latest=false
+          test "$(gh api "repos/$repo/git/ref/tags/$tag" --jq .object.sha)" = "$GITHUB_SHA"
+          gh release view "$tag" --repo "$repo" --json isDraft,isPrerelease,url \
+            --jq 'select(.isDraft == false and .isPrerelease == true).url' | tee -a "$GITHUB_STEP_SUMMARY" | grep '^https://'
