@@ -7,7 +7,7 @@
   },
   "scripts": {
     "backend": "node backend/server.mjs",
-    "test:backend": "node --test backend/server.test.mjs",
+    "test:backend": "node --test backend/*.test.mjs",
     "test": "npm run test:backend && npm --prefix mobile run check"
   }
 }

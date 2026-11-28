@@ -1,4 +1,4 @@
-import { encounterDraw, resolveEncounter, type Encounter, type GameState } from "./engine";
+import { encounterDraw, resolveEncounter, type Encounter, type GameState } from "./engine.ts";
 
 export type PortRanks = { crime: number; patrol: number };
 

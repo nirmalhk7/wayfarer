@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { createTradeHandlers } from "./trading-http.mjs";
 
 const atlas = new URL("../mobile/src/territories/north-coast.json", import.meta.url);
 const territoryGeoJSON = readFileSync(atlas);
@@ -34,7 +35,14 @@ function send(req, res, status, body, type = "application/json", headers = {}) {
   res.end(req.method === "HEAD" ? undefined : body);
 }
 
+const unavailable = async () => { throw new Error("Trading storage unavailable"); };
+const trading = createTradeHandlers(process.env.BLOB_STORE_ID || process.env.BLOB_READ_WRITE_TOKEN
+  ? (await import("./blob-store.mjs")).blobStore
+  : { check: unavailable, read: unavailable, write: unavailable });
+
 const server = createServer((req, res) => {
+  if (req.url === "/health") return void trading.health(req, res);
+  if (req.url === "/v1/live") return void trading.live(req, res);
   if (req.method !== "GET" && req.method !== "HEAD") {
     return send(req, res, 405, methodNotAllowed, "application/json", { Allow: "GET, HEAD" });
   }

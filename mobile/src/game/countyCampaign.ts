@@ -1,4 +1,4 @@
-import { createGame, type GameState, type Starport } from "./engine";
+import { createGame, type GameState, type Starport } from "./engine.ts";
 import type { AtlasPort } from "../atlas/geometry";
 
 export const COUNTY_CAMPAIGN_ID = "county-live-v1";
