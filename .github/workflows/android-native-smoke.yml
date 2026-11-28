@@ -1,0 +1,73 @@
+name: Published Android APK native smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [qa/wayfarer-native-smoke]
+    paths:
+      - .github/workflows/android-native-smoke.yml
+      - tools/native-apk-smoke.py
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.repository == 'nirmalhk7/wayfarer' && github.ref == 'refs/heads/qa/wayfarer-native-smoke'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    env:
+      RELEASE: android-preview-e2d3dd2862b3780992561fd88dad4484deaa9b97
+      APK_SHA: a9d6cf073a689a86d367b079aa18e63c62404ba09feebac3ee247b3d4391b96b
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Install official Android emulator and verify KVM
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l /dev/kvm
+          sudo chown "$(id -u)" /dev/kvm
+          sudo chmod u+rw /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if ! test -x "$sdk"; then sdk=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -print -quit); fi
+          test -x "$sdk"
+          (set +o pipefail; yes | "$sdk" --licenses) >/dev/null
+          "$sdk" 'platform-tools' 'emulator' 'build-tools;36.0.0' 'system-images;android-34;google_apis;x86_64'
+          "$ANDROID_HOME/emulator/emulator" -accel-check
+      - name: Launch published APK offline and verify its Compass
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/wayfarer-avd" ANDROID_USER_HOME="$RUNNER_TEMP/wayfarer-android-user"
+          mkdir -p evidence "$ANDROID_AVD_HOME" "$ANDROID_USER_HOME"
+          release="https://github.com/nirmalhk7/wayfarer/releases/download/$RELEASE"
+          apk="$RUNNER_TEMP/Wayfarer-android-preview.apk"
+          curl --fail --location --retry 2 "$release/Wayfarer-android-preview.apk" -o "$apk"
+          curl --fail --location --retry 2 "$release/Wayfarer-android-preview.apk.sha256" -o "$RUNNER_TEMP/wayfarer.sha256"
+          grep -Fx "$APK_SHA  Wayfarer-android-preview.apk" "$RUNNER_TEMP/wayfarer.sha256"
+          printf '%s  %s\n' "$APK_SHA" "$apk" | sha256sum -c -
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | tee evidence/signature.txt
+          grep -Fq 'fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c' evidence/signature.txt
+          avd="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+          if ! test -x "$avd"; then avd=$(find "$ANDROID_HOME/cmdline-tools" -name avdmanager -print -quit); fi
+          test -x "$avd"
+          printf 'no\n' | "$avd" create avd --name WayfarerSmoke --package 'system-images;android-34;google_apis;x86_64' --device pixel_4
+          export ANDROID_SERIAL=emulator-5554
+          "$ANDROID_HOME/platform-tools/adb" start-server
+          "$ANDROID_HOME/emulator/emulator" -avd WayfarerSmoke -port 5554 -accel on -gpu swiftshader_indirect \
+            -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics -cores 2 -memory 3072 \
+            >evidence/emulator.log 2>&1 &
+          emulator_pid=$!
+          trap 'kill "$emulator_pid" 2>/dev/null || true' EXIT
+          python3 tools/native-apk-smoke.py "$apk"
+      - name: Upload native test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: wayfarer-native-smoke
+          path: evidence/
+          retention-days: 7
+          if-no-files-found: ignore
