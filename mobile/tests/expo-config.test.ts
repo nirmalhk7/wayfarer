@@ -12,7 +12,7 @@ test("resolved Android config uses foreground permission with plain port languag
   const config = JSON.parse(output) as {
     platforms?: string[];
     android?: { allowBackup?: boolean; permissions?: string[]; blockedPermissions?: string[] };
-    plugins?: (string | [string, { locationWhenInUsePermission?: string }])[];
+    plugins?: (string | [string, { locationWhenInUsePermission?: string; isAndroidMotionActivityEnabled?: boolean }])[];
   };
 
   assert.deepEqual(config.platforms, ["android"]);
@@ -23,6 +23,7 @@ test("resolved Android config uses foreground permission with plain port languag
   assert.ok(!config.android?.permissions?.includes("ACCESS_BACKGROUND_LOCATION"));
   const location = config.plugins?.find((plugin) => Array.isArray(plugin) && plugin[0] === "expo-location");
   assert.ok(Array.isArray(location));
+  assert.equal(location[1].isAndroidMotionActivityEnabled, true);
   const wording = location[1].locationWhenInUsePermission;
   assert.ok(wording);
   assert.match(wording, /on this device to find your port, show nearby ranges, and open the local market/);

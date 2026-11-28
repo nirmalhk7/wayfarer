@@ -41,7 +41,7 @@ import {
 } from "./src/game/presentation";
 import { usePortArrival } from "./src/location/usePortArrival";
 import { stopLegacyPointTasks } from "./src/location/retiredPointTasks";
-import { createCountyCampaign, createCountyPort, recordCountyVisit } from "./src/game/countyCampaign";
+import { createCountyCampaign, recordCountyVisit } from "./src/game/countyCampaign";
 import { nearbyPorts } from "./src/atlas/geometry";
 
 import {
@@ -354,9 +354,10 @@ function Wayfarer() {
   const game = campaigns[mode];
   const livePort = live.compassPosition ? live.presence.port : null;
   const selectedPort = campaigns.training.ports.find(({ id }) => id === trainingTarget) ?? campaigns.training.ports[0];
-  const dockedPort = mode === "live"
-    ? livePort && (game.ports.find((port) => port.id === livePort.id) ?? createCountyPort(livePort))
-    : activeDockedPort(game, coordinator);
+  const liveMarket = live.eligible && livePort
+    ? campaigns.live.ports.find((port) => port.id === livePort.id) ?? null
+    : null;
+  const dockedPort = mode === "live" ? liveMarket : activeDockedPort(game, coordinator);
   const berthed = mode === "live" ? Boolean(dockedPort) : dockedPort?.id === selectedPort.id;
   const trainingPlace = mode === "training" && usesNorthCoastTrainingMap(game)
     ? territoryAt(selectedPort.position)?.name : undefined;
@@ -364,7 +365,7 @@ function Wayfarer() {
   const usedCargo = cargoUnits(game.player.cargo);
   const compassPosition = mode === "live" ? live.compassPosition : trainingPosition;
   const compassTile = live.compassTile;
-  const currentPortId = compassPosition ? dockedPort?.id : undefined;
+  const currentPortId = mode === "live" ? livePort?.id : dockedPort?.id;
   const visitedIds = mode === "training" ? game.discoveredPortIds : undefined;
   const compassReadings = useMemo<PortReading[]>(() => {
     if (tab !== "compass") return [];
@@ -430,9 +431,9 @@ function Wayfarer() {
   }, [initialCampaigns]);
 
   useEffect(() => {
-    if (!saveReady || !livePort) return;
+    if (!saveReady || !livePort || !live.eligible || live.eligiblePortId() !== livePort.id) return;
     setCampaigns((current) => updateCampaign(current, "live", (game) => recordCountyVisit(game, livePort)));
-  }, [livePort, saveReady]);
+  }, [livePort, live.eligible, saveReady]);
 
   const liveCampaign = campaigns.live;
   const trainingCampaign = campaigns.training;
@@ -477,7 +478,7 @@ function Wayfarer() {
 
   function mutate(action: (current: GameState) => GameState, success: string) {
     if (resetInProgress.current || contractSavingRef.current) return;
-    if (mode === "live" && !live.currentPortId()) return;
+    if (mode === "live" && !live.eligiblePortId()) return;
     try {
       const base = campaignsRef.current[mode];
       const updated = action(base);
@@ -549,12 +550,11 @@ function Wayfarer() {
   function executeTrade(quote: MarketQuote, side: "buy" | "sell", quantity: number) {
     if (!dockedPort) return;
     const order = { portId: dockedPort.id, commodityId: quote.commodityId, side, quantity };
-    if (mode === "live" && (!livePort || live.currentPortId() !== order.portId)) return;
+    if (mode === "live" && (!livePort || live.eligiblePortId() !== order.portId)) return;
     mutate(
       (current) => {
         if (mode === "training") return trade(current, order);
-        const known = recordCountyVisit(current, livePort!);
-        const traded = trade({ ...known, dockedPortId: order.portId }, order);
+        const traded = trade({ ...current, dockedPortId: order.portId }, order);
         return { ...traded, dockedPortId: null };
       },
       side === "sell" ? "Sale complete. Check your receipt."
@@ -627,6 +627,10 @@ function Wayfarer() {
                 <Stat label="Hull" value={game.player.hull + "/" + game.player.maxHull}
                   warning={game.player.hull < game.player.maxHull} />
               </View>
+              {mode === "live" && !liveRequested && <Text style={styles.receiptLine}>
+                Live uses location for the Compass and Physical activity to confirm walking visits.
+              </Text>}
+              {mode === "live" && liveRequested && !live.eligible && <Text style={styles.receiptLine}>{live.motion}</Text>}
               {mode === "live" && liveRequested && <Button label="Pause Live navigation"
                 onPress={() => setLiveRequested(false)} tone="ghost" />}
               {!berthed && mode === "training" && <Text style={styles.receiptLine}>
@@ -722,7 +726,7 @@ function Wayfarer() {
                 <>
                   <SectionHeader title={mode === "training" ? "Contract log" : "Live market"} />
                   <Text style={styles.emptyTitle}>Market encrypted</Text>
-                  <Text style={styles.emptyCopy}>{mode === "training" ? "Complete simulated docking qualification to access prices." : "Confirm that you are inside a Live port to access its market."}</Text>
+                  <Text style={styles.emptyCopy}>{mode === "training" ? "Complete simulated docking qualification to access prices." : "Walk inside a Live port to unlock its market."}</Text>
                   <Button label="Return to bridge" onPress={() => setTab("bridge")} tone="ghost" />
                 </>
               )}

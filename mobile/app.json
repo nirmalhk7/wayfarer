@@ -32,6 +32,7 @@
       [
         "expo-location",
         {
+          "isAndroidMotionActivityEnabled": true,
           "locationWhenInUsePermission": "Wayfarer uses your location on this device to find your port, show nearby ranges, and open the local market while the app is in use."
         }
       ]

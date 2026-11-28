@@ -1,6 +1,6 @@
 # Wayfarer
 
-Wayfarer is an Android space-trading game. Every county or county equivalent in the 50 states and D.C. is a Live port. A confirmed crossing opens the new port’s market. Android checks the phone’s position locally against downloaded regions. Training runs offline with its own contracts, markets and saves.
+Wayfarer is an Android space-trading game. Every county or county equivalent in the 50 states and D.C. is a Live port. A confirmed crossing updates the Compass. Walking in the new port logs a visit and unlocks its market. Android checks the phone’s position locally against downloaded regions. Training runs offline with its own contracts, markets and saves.
 
 ## Run locally
 

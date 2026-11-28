@@ -1,6 +1,6 @@
 # U.S. county port atlas
 
-The Live atlas covers 3,144 counties and county equivalents in all 50 states and D.C. Each port uses a stable namespaced ID, such as `county:06081`. Moving within one county keeps the same market. A confirmed crossing, including across a state line, opens the next port. Software replay covers the transition. Physical field testing is pending.
+The Live atlas covers 3,144 counties and county equivalents in all 50 states and D.C. Each port uses a stable namespaced ID, such as `county:06081`. Moving within one county keeps the same market. A confirmed crossing, including across a state line, updates the Compass. Walking in the new port logs a visit and unlocks its market. Software replay covers the transition. Physical field testing is pending.
 
 ## Build from source
 
@@ -32,7 +32,7 @@ The registered Expo tests replay within San Mateo, across San Mateo and San Fran
 
 ## Location and saves
 
-Live requires opt-in, a foreground fix no older than 30 seconds and reported accuracy of at most 100 m. A position must be confidently inside a single port with an extra 35 m of clearance. Live trading pauses while a required region is missing, while the position is ambiguous or when location access becomes unavailable.
+Live requires opt-in, a foreground fix no older than 30 seconds and reported accuracy of at most 100 m. A position must be confidently inside a single port with an extra 35 m of clearance. Live trading requires the walking check described in the [Android guide](../mobile/README.md).
 
 Android holds measured positions temporarily in memory. HTTP requests include a coarse one-degree region identifier, which a host can see. They do not include measured GPS coordinates, ship data or player progress. Revisit downloaded regions offline. The Compass shows approximate straight-line distance and true bearing to nearby boundaries it can calculate without crossing the current region’s geometry limits. The current port gets a status label.
 

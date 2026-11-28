@@ -1,11 +1,11 @@
 
-import { afterEach, expect, jest, test } from "@jest/globals";
+import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { registerRootComponent } from "expo";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
-import { AccessibilityInfo, Animated, Share } from "react-native";
+import { AccessibilityInfo, Animated, AppState, Share } from "react-native";
 
 import "../index";
 import { createGame } from "../src/game/engine";
@@ -23,6 +23,7 @@ jest.mock("../src/atlas/download", () => jest.requireActual<typeof import("./atl
 const downloaded = jest.requireMock("../src/atlas/download") as ReturnType<typeof import("./atlas-fixture")["atlasFixture"]>;
 
 jest.mock("expo", () => ({ ...jest.requireActual<typeof import("expo")>("expo"), registerRootComponent: jest.fn() }));
+const mockMotionGrant = { status: "granted", granted: true, canAskAgain: true, expires: "never" } as const;
 jest.mock("expo-location", () => ({
   requestForegroundPermissionsAsync: jest.fn(async () => ({ status: "denied" })),
   getForegroundPermissionsAsync: jest.fn(async () => ({ status: "granted" })),
@@ -35,6 +36,10 @@ jest.mock("expo-location", () => ({
   PermissionStatus: { GRANTED: "granted" },
   getCurrentPositionAsync: jest.fn(),
   watchPositionAsync: jest.fn(),
+  MotionActivityConfidence: { Low: 0, High: 2 },
+  requestMotionActivityPermissionsAsync: jest.fn(async () => mockMotionGrant),
+  getMotionActivityPermissionsAsync: jest.fn(async () => mockMotionGrant),
+  watchMotionActivityAsync: jest.fn(async () => ({ remove: jest.fn() })),
 }));
 jest.mock("expo-task-manager", () => ({
   isTaskDefined: jest.fn(() => false), defineTask: jest.fn(), isAvailableAsync: jest.fn(async () => false),
@@ -46,6 +51,8 @@ jest.mock("expo-haptics", () => ({
   ImpactFeedbackStyle: { Light: "light" },
   NotificationFeedbackType: { Error: "error" },
 }));
+
+beforeEach(() => { AppState.currentState = "active"; });
 
 afterEach(async () => {
   jest.restoreAllMocks();
@@ -263,8 +270,8 @@ test("Expo reset cancels safely, isolates campaigns, and keeps Live paused acros
   jest.mocked(Location.watchPositionAsync).mockResolvedValueOnce({ remove() {} });
   await press("Start live navigation");
   await screen.findByRole("header", { name: "Humboldt" });
-  await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds).toEqual(["county:06023"]));
-  expect((await campaign("live"))?.player.credits).toBe(900);
+  expect(screen.queryByRole("button", { name: "Enter station market" })).toBeNull();
+  expect(await campaign("live")).toBeNull();
   expect(await AsyncStorage.getItem(storageKeyForMode("training"))).toBe(trainingAfter);
 });
 
@@ -361,6 +368,8 @@ test("Training starts without permission and an explicit denied Live start prese
   const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
   const permissionCalls = jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls.length;
   const reads = jest.mocked(Location.getCurrentPositionAsync).mock.calls.length;
+  const motionRequests = jest.mocked(Location.requestMotionActivityPermissionsAsync).mock.calls.length;
+  const motionWatches = jest.mocked(Location.watchMotionActivityAsync).mock.calls.length;
   await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
   expect(screen.getByText(/WFR-00 · Humboldt · Approach/)).toBeTruthy();
@@ -377,6 +386,8 @@ test("Training starts without permission and an explicit denied Live start prese
   await tab("Bridge");
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls + 1);
   expect(jest.mocked(Location.getCurrentPositionAsync).mock.calls).toHaveLength(reads);
+  expect(jest.mocked(Location.requestMotionActivityPermissionsAsync).mock.calls).toHaveLength(motionRequests);
+  expect(jest.mocked(Location.watchMotionActivityAsync).mock.calls).toHaveLength(motionWatches);
   await fireEvent(screen.getByRole("switch", { name: "Training simulator" }), "valueChange", true);
   expect(screen.getByTestId("vista-docked")).toBeTruthy();
   await press("Enter station market");
@@ -384,7 +395,7 @@ test("Training starts without permission and an explicit denied Live start prese
   expect(await campaign("live")).toBeNull();
 });
 
-test("Live keeps one market within San Mateo, changes across counties, and reuses cached data offline", async () => {
+test("Live reports drive-throughs, credits walking only and restores visits offline", async () => {
   const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
   const foster = { latitude: 37.5585, longitude: -122.2711 };
   const burlingame = { latitude: 37.5841, longitude: -122.3661 };
@@ -395,8 +406,8 @@ test("Live keeps one market within San Mateo, changes across counties, and reuse
   const time = jest.spyOn(Date, "now");
   let now = 2_000_000;
   time.mockImplementation(() => now);
-  const fix = (point: typeof foster, timestamp = now): Location.LocationObject => ({
-    coords: { ...point, accuracy: 5, altitude: null, altitudeAccuracy: null, speed: null, heading: null }, timestamp,
+  const fix = (point: typeof foster, timestamp = now, speed = 0): Location.LocationObject => ({
+    coords: { ...point, accuracy: 5, altitude: null, altitudeAccuracy: null, speed, heading: null }, timestamp,
   });
   let listener: Location.LocationCallback | undefined;
   const remove = jest.fn();
@@ -408,8 +419,23 @@ test("Live keeps one market within San Mateo, changes across counties, and reuse
       return { remove };
     });
   }
-  async function move(point: typeof foster, timestamp?: number) {
-    await act(async () => listener!(fix(point, timestamp)));
+  async function move(point: typeof foster, timestamp?: number, speed?: number) {
+    await act(async () => listener!(fix(point, timestamp, speed)));
+  }
+  async function activity(kind: Location.MotionActivityType) {
+    const motion = jest.mocked(Location.watchMotionActivityAsync).mock.calls.at(-1)![0];
+    const activities = Object.fromEntries(["automotive", "cycling", "running", "walking", "stationary", "unknown"]
+      .map((name) => [name, { detected: kind === name, confidence: kind === name ? 2 : 0 }])) as Location.MotionActivityObject["activities"];
+    await act(async () => motion({ activities, timestamp: now }));
+  }
+  async function walk(point: typeof foster) {
+    await activity("walking" as Location.MotionActivityType);
+    await move(point, undefined, 1.5);
+    for (let segment = 1; segment <= 4; segment++) {
+      now += 5_000;
+      await activity("walking" as Location.MotionActivityType);
+      await move({ ...point, latitude: point.latitude + segment * 0.000068 }, undefined, 1.5);
+    }
   }
   const old = createGame({ origin: { latitude: 0, longitude: 0 } });
   old.player.credits = 1042;
@@ -434,6 +460,10 @@ test("Live keeps one market within San Mateo, changes across counties, and reuse
   expect(screen.getByText("Current port")).toBeTruthy();
   const beforeRange = screen.getByRole("button", { name: /^San Francisco, .* true$/ }).props.accessibilityLabel;
   await tab("Bridge");
+  await screen.findByText("Walk inside this port to log a visit and unlock its market");
+  expect(await campaign("live")).toBeNull();
+  now += 1_000;
+  await walk(foster);
   await press("Enter station market");
   await order("Buy", "Ion Fuel", 1);
   await waitFor(async () => expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1));
@@ -446,7 +476,8 @@ test("Live keeps one market within San Mateo, changes across counties, and reuse
   await move(foster); // Duplicate timestamp.
   now += 1000;
   await move(burlingame);
-  expect(screen.getByRole("header", { name: "San Mateo" })).toBeTruthy();
+  expect(screen.getByText("Arrived in San Mateo")).toBeTruthy();
+  expect(screen.getByText("Market encrypted")).toBeTruthy();
   expect(await campaign("live")).toEqual(first);
   const saved = await AsyncStorage.getItem(COUNTY_LIVE_STORAGE_KEY);
   expect(saved).not.toContain(String(burlingame.latitude));
@@ -463,8 +494,18 @@ test("Live keeps one market within San Mateo, changes across counties, and reuse
   }
   expect(await campaign("live")).toEqual(first);
   now += 1000;
-  await move(sanFrancisco);
-  await screen.findByRole("header", { name: "San Francisco" });
+  await activity("automotive" as Location.MotionActivityType);
+  await move(sanFrancisco, undefined, 22);
+  await screen.findByText("Arrived in San Francisco");
+  expect(screen.getByText("Market encrypted")).toBeTruthy();
+  for (const speed of [0, 1.2, 0, 3.5, 0]) {
+    now += 5_000;
+    await activity((speed > 0 ? "automotive" : "stationary") as Location.MotionActivityType);
+    await move(sanFrancisco, undefined, speed);
+    expect(await campaign("live")).toEqual(first);
+  }
+  now += 31_000;
+  await walk(sanFrancisco);
   expect(screen.getByRole("button", { name: /^Buy Ion Fuel/ })).toBeTruthy();
   await waitFor(async () => expect((await campaign("live"))?.discoveredPortIds)
     .toEqual(["county:06081", "county:06075"]));
@@ -473,6 +514,12 @@ test("Live keeps one market within San Mateo, changes across counties, and reuse
   expect(screen.getByRole("button", { name: /^San Mateo, .* true$/ })).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Station");
+  for (let i = 0; i < 25; i++) {
+    now += 5_000;
+    await move({ ...sanFrancisco, latitude: sanFrancisco.latitude + 4 * 0.000068 });
+  }
+  expect(screen.getByText("Market encrypted")).toBeTruthy();
+  expect((await campaign("live"))?.discoveredPortIds).toEqual(["county:06081", "county:06075"]);
   const crossingTime = now;
   now += 31_000;
   await move(sanFrancisco, crossingTime + 1);
@@ -495,9 +542,15 @@ test("Live keeps one market within San Mateo, changes across counties, and reuse
     expect(screen.getByText("Market encrypted")).toBeTruthy();
     await tab("Bridge");
     allow(sanFrancisco);
+    jest.mocked(Location.requestMotionActivityPermissionsAsync).mockResolvedValueOnce({
+      ...mockMotionGrant, granted: false, status: Location.PermissionStatus.DENIED,
+    });
     await press("Start live navigation");
     await screen.findByRole("header", { name: "San Francisco" });
     expect(downloaded.paths).toHaveLength(requests);
+    await screen.findByText("Allow Physical activity to log visits and trade");
+    expect(screen.queryByRole("button", { name: "Enter station market" })).toBeNull();
+    expect((await campaign("live"))?.discoveredPortIds).toEqual(["county:06081", "county:06075"]);
     expect((await campaign("live"))?.player.cargo.ion_fuel).toBe(1);
     now += 1000;
     await move({ latitude: 38.9072, longitude: -77.0369 });
