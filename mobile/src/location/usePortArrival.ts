@@ -152,7 +152,7 @@ export function usePortArrival(enabled: boolean, attempt: number) {
         walking.observe(undefined, sample, now);
         publish({ ...paused, status: "Loading port data" });
         void atlas.load(key).then(arrive).catch(() => {
-          if (isCurrent()) publish({ ...paused, status: "Port data unavailable. Connect to download this region." });
+          if (isCurrent()) publish({ ...paused, status: "Port data unavailable in this build" });
         });
       };
       try {

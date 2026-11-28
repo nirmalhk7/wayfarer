@@ -33,8 +33,20 @@ jobs:
           java-version: '21'
       - name: Install locked dependencies
         run: npm ci --prefix mobile
-      - name: Check app entry point and backend
-        run: npm test
+      - name: Build the pinned offline Live atlas
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-gdal python3-venv
+          /usr/bin/python3 -m venv --system-site-packages "$RUNNER_TEMP/atlas-python"
+          python="$RUNNER_TEMP/atlas-python/bin/python"
+          "$python" -m pip install 'shapely==2.1.2'
+          archive="$RUNNER_TEMP/tl_2026_us_county.zip"
+          curl --fail --silent --show-error --location --retry 3 \
+            "$(jq -er .url tools/tiger2026-county-source.json)" -o "$archive"
+          "$python" tools/build-port-atlas.py "$archive" tools/tiger2026-county-source.json "$RUNNER_TEMP/atlas" --workers 2
+          WAYFARER_ATLAS_TEST_DATA="$RUNNER_TEMP/atlas/county2026-v2" npm test
       - name: Prepare Android SDK
         shell: bash
         run: |
@@ -57,7 +69,7 @@ jobs:
         env:
           CI: 'true'
           EXPO_OFFLINE: '1'
-        run: bash mobile/tools/build-preview-apk.sh "$RUNNER_TEMP/wayfarer-apk"
+        run: bash mobile/tools/build-preview-apk.sh "$RUNNER_TEMP/wayfarer-apk" "$RUNNER_TEMP/atlas/county2026-v2"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wayfarer-android-preview
@@ -88,6 +100,7 @@ jobs:
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
           apk=Wayfarer-android-preview.apk
           checksum="$apk.sha256"
+          atlas=Wayfarer-county2026-v2.zip
           sha256sum -c "$checksum"
           tag="android-preview-$GITHUB_SHA"
           repo="$GITHUB_REPOSITORY"
@@ -96,7 +109,7 @@ jobs:
             # An already published release is immutable from this workflow.
             if jq -e '.isDraft == false' release.json >/dev/null; then
               test "$(gh api "repos/$repo/git/ref/tags/$tag" --jq .object.sha)" = "$GITHUB_SHA"
-              gh release download "$tag" --repo "$repo" --pattern "$apk" --pattern "$checksum" --dir existing
+              gh release download "$tag" --repo "$repo" --pattern "$apk" --pattern "$checksum" --pattern "$atlas" --dir existing
               (cd existing && sha256sum -c "$checksum")
               printf 'Verified existing release: %s/%s/releases/tag/%s\n' "$GITHUB_SERVER_URL" "$repo" "$tag"
               exit 0
@@ -106,7 +119,7 @@ jobs:
             cat > notes.md <<NOTES
           Android sideload preview built from main commit $GITHUB_SHA by [GitHub Actions]($GITHUB_SERVER_URL/$repo/actions/runs/$GITHUB_RUN_ID).
 
-          Download **$apk** and its SHA-256 file. The APK includes the game bundle and can run Training offline. Live requires a separately hosted atlas and a build configured to use it.
+          Download **$apk** and use the SHA-256 file to verify it. The APK includes the full U.S. Live atlas (all 3,144 ports across the 50 states and D.C.) and the Training campaign. Both work without downloading port data. Live requires a fresh on-device location fix. **$atlas** contains the same checked index, geometry tiles and ranked port registry as the APK.
 
           This release uses the standard public Expo/React Native debug signing key for preview installs. It is not production signing. An existing install signed with a different key must be uninstalled before installing this APK. Uninstalling removes local saves.
           NOTES
@@ -114,9 +127,9 @@ jobs:
               --title "Wayfarer Android preview ${GITHUB_SHA:0:12}" --notes-file notes.md
           fi
 
-          gh release upload "$tag" --repo "$repo" --clobber "$apk" "$checksum"
-          # Read back the two uploaded assets before publishing the draft.
-          gh release download "$tag" --repo "$repo" --pattern "$apk" --pattern "$checksum" --dir uploaded
+          gh release upload "$tag" --repo "$repo" --clobber "$apk" "$checksum" "$atlas"
+          # Read back the uploaded assets before publishing the draft.
+          gh release download "$tag" --repo "$repo" --pattern "$apk" --pattern "$checksum" --pattern "$atlas" --dir uploaded
           cmp "$checksum" "uploaded/$checksum"
           (cd uploaded && sha256sum -c "$checksum")
           gh release edit "$tag" --repo "$repo" --draft=false --prerelease --latest=false

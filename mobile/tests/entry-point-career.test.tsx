@@ -1,7 +1,11 @@
 
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
+import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react-native";
 import { registerRootComponent } from "expo";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
@@ -21,6 +25,16 @@ jest.mock("react-native-safe-area-context", () =>
   jest.requireActual<{ default: unknown }>("react-native-safe-area-context/jest/mock").default,
 );
 jest.mock("../src/atlas/download", () => jest.requireActual<typeof import("./atlas-fixture")>("./atlas-fixture").atlasFixture());
+jest.mock("expo-file-system/legacy", () => ({
+  bundleDirectory: "asset:///",
+  documentDirectory: "file:///test/",
+  readAsStringAsync: jest.fn(),
+}));
+jest.mock("expo-crypto", () => ({
+  CryptoDigestAlgorithm: { SHA256: "SHA-256" },
+  digestStringAsync: async (_algorithm: unknown, value: string) =>
+    jest.requireActual<typeof import("./atlas-fixture")>("./atlas-fixture").sha256(value),
+}));
 const downloaded = jest.requireMock("../src/atlas/download") as ReturnType<typeof import("./atlas-fixture")["atlasFixture"]>;
 
 jest.mock("expo", () => ({ ...jest.requireActual<typeof import("expo")>("expo"), registerRootComponent: jest.fn() }));
@@ -160,7 +174,6 @@ test("Expo entry point settles a Training shipment, pays for capacity and restor
   expect(screen.getByTestId("vista-docked")).toBeTruthy();
   await tab("Compass");
   expect(screen.getByRole("button", { name: /^Select Vela Outpost, visited/ })).toBeTruthy();
-  expect(screen.getByText("2 of 7 scenarios visited")).toBeTruthy();
 
   await tab("Station");
   await order("Sell", "Ion Fuel", 8);
@@ -286,12 +299,11 @@ test("the registered app fulfils the local contract once across failed save, ret
   const mounted = await render(<RegisteredApp />);
   await screen.findByRole("switch", { name: "Training simulator" });
   await tab("Compass");
-  expect(screen.getByRole("header", { name: "Compass" })).toBeTruthy();
+  expect(screen.queryByRole("header", { name: "Compass" })).toBeNull();
   expect(screen.getByTestId("port-compass")).toBeTruthy();
-  expect(screen.getByText("Straight-line range from your simulated ship to each scenario.")).toBeTruthy();
+  expect(screen.getByText("North up · Straight-line range")).toBeTruthy();
   expect(screen.getByRole("button", { name: /^Select Cinder Exchange, unvisited, .* km · .* true/ })).toBeTruthy();
   expectPlainPortLanguage();
-  expect(screen.getByText(/Do not travel to these points/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: /enable public pilot/i })).toBeNull();
   await tab("Bridge");
   expect(screen.getByTestId("vista-flight")).toBeTruthy();
@@ -382,7 +394,7 @@ test("Training starts without permission and an explicit denied Live start prese
   await press("Start live navigation");
   await screen.findByText("Location permission denied");
   await tab("Compass");
-  expect(screen.getByText("Port ranges need a fresh, accurate fix and downloaded port data.")).toBeTruthy();
+  expect(screen.getByText("Port ranges unavailable")).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Bridge");
   expect(jest.mocked(Location.requestForegroundPermissionsAsync).mock.calls).toHaveLength(permissionCalls + 1);
@@ -449,7 +461,7 @@ test("Live reports drive-throughs, credits walking only and restores visits offl
   await fireEvent(training, "valueChange", false);
   await tab("Compass");
   expect(screen.getByTestId("port-compass")).toBeTruthy();
-  expect(screen.getByText("Port ranges need a fresh, accurate fix and downloaded port data.")).toBeTruthy();
+  expect(screen.getByText("Port ranges unavailable")).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Bridge");
   allow(foster);
@@ -459,7 +471,7 @@ test("Live reports drive-throughs, credits walking only and restores visits offl
   expectPlainPortLanguage();
   await tab("Compass");
   expect(screen.getByText("Current port")).toBeTruthy();
-  const beforeRange = screen.getByRole("button", { name: /^San Francisco, .* true$/ }).props.accessibilityLabel;
+  const beforeRange = screen.getByLabelText(/^San Francisco, .* true$/).props.accessibilityLabel;
   await tab("Bridge");
   await screen.findByText("Walk inside this port to log a visit and unlock its market");
   expect(await campaign("live")).toBeNull();
@@ -484,7 +496,7 @@ test("Live reports drive-throughs, credits walking only and restores visits offl
   expect(saved).not.toContain(String(burlingame.latitude));
   expect(saved).not.toContain(String(burlingame.longitude));
   await tab("Compass");
-  expect(screen.getByRole("button", { name: /^San Francisco, .* true$/ }).props.accessibilityLabel).not.toBe(beforeRange);
+  expect(screen.getByLabelText(/^San Francisco, .* true$/).props.accessibilityLabel).not.toBe(beforeRange);
   await tab("Station");
 
   for (const latitude of [border.latitude - .00009, border.latitude + .00009]) {
@@ -512,7 +524,7 @@ test("Live reports drive-throughs, credits walking only and restores visits offl
     .toEqual(["county:06081", "county:06075"]));
   await tab("Compass");
   expect(screen.getByText("San Francisco")).toBeTruthy();
-  expect(screen.getByRole("button", { name: /^San Mateo, .* true$/ })).toBeTruthy();
+  expect(screen.getByLabelText(/^San Mateo, .* true$/)).toBeTruthy();
   expectPlainPortLanguage();
   await tab("Station");
   for (let i = 0; i < 25; i++) {
@@ -691,4 +703,49 @@ test.each(contacts.flatMap((contact) => (["Evade", "Stop", "Surrender", "Fight"]
   await waitFor(async () => expect(await campaign("live")).toEqual(expected));
   expect(screen.queryByRole("header", { name: fixture.title })).toBeNull();
   expect(rankReads).toHaveBeenCalledTimes(1);
+});
+
+
+const nationalAtlas = process.env.WAYFARER_ATLAS_TEST_DATA;
+(nationalAtlas ? test : test.skip)("registered Live Compass opens a real bundled port on first launch offline", async () => {
+  const network = jest.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Offline test"));
+  const fileRead = jest.mocked(FileSystem.readAsStringAsync);
+  fileRead.mockImplementation(async (uri) => {
+    const root = "asset:///wayfarer-atlas/";
+    if (!uri.startsWith(root)) throw new Error("Not an APK asset");
+    const path = uri.slice(root.length);
+    return path.startsWith("tiles/")
+      ? gunzipSync(readFileSync(join(nationalAtlas!, path + ".gz"))).toString()
+      : readFileSync(join(nationalAtlas!, path), "utf8");
+  });
+  const actual = jest.requireActual<typeof import("../src/atlas/download")>("../src/atlas/download").atlas;
+  const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
+  const grant = { status: Location.PermissionStatus.GRANTED, granted: true, canAskAgain: true, expires: "never" } as const;
+  jest.mocked(Location.requestForegroundPermissionsAsync).mockResolvedValueOnce(grant);
+  jest.mocked(Location.watchPositionAsync).mockResolvedValueOnce({ remove: jest.fn() });
+  jest.mocked(Location.getCurrentPositionAsync).mockResolvedValueOnce({
+    timestamp: Date.now(),
+    coords: { latitude: 37.5585, longitude: -122.2711, accuracy: 5, altitude: null, altitudeAccuracy: null, heading: null, speed: 0 },
+  });
+  downloaded.use(actual);
+  try {
+    await render(<RegisteredApp />);
+    await fireEvent(await screen.findByRole("switch", { name: "Training simulator" }), "valueChange", false);
+    await press("Start live navigation");
+    await screen.findByText("Arrived in San Mateo");
+    await tab("Compass");
+    expect(screen.getByText("Current port")).toBeTruthy();
+    const compass = screen.getByTestId("port-compass");
+    expect(within(compass).getByText("San Mateo")).toBeTruthy();
+    expect(screen.getByLabelText(/^San Francisco, .* true$/)).toBeTruthy();
+    expect(within(screen.getByTestId("port-signal-NE")).getByText("Alameda")).toBeTruthy();
+    expect(screen.getByText("North up · Straight-line range")).toBeTruthy();
+    expect(screen.queryByText("No heading available")).toBeNull();
+    expect(await actual.ranksFor("county:06081")).toEqual({ crime: expect.any(Number), patrol: expect.any(Number) });
+    expect(fileRead).toHaveBeenCalledWith("asset:///wayfarer-atlas/counties.json");
+    expect(network).not.toHaveBeenCalled();
+  } finally {
+    downloaded.restart();
+    fileRead.mockReset();
+  }
 });

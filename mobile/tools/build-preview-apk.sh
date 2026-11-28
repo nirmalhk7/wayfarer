@@ -3,6 +3,8 @@
 set -euo pipefail
 
 output=${1:?Pass an output directory for the APK and checksum}
+atlas=${2:?Pass the directory containing the pinned national atlas}
+atlas=$(cd -- "$atlas" && pwd)
 mkdir -p -- "$output"
 output=$(cd -- "$output" && pwd)
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
@@ -14,6 +16,7 @@ test -x "$tools/apksigner"
 test -x "$tools/aapt"
 
 ./node_modules/.bin/expo prebuild --platform android --no-install
+python3 tools/preview-atlas.py stage "$atlas" android/app/src/main/assets
 # No Metro server is required. Gradle embeds the app and assets in this variant.
 (cd android && ./gradlew --no-daemon :app:clean :app:assembleRelease)
 
@@ -35,4 +38,6 @@ fi
 
 name=Wayfarer-android-preview.apk
 install -m 0644 "$apk" "$output/$name"
-(cd "$output" && sha256sum "$name" > "$name.sha256" && sha256sum -c "$name.sha256")
+atlas_name=Wayfarer-county2026-v2.zip
+python3 tools/preview-atlas.py archive "$apk" "$output/$atlas_name"
+(cd "$output" && unzip -tq "$atlas_name" && sha256sum "$name" "$atlas_name" > "$name.sha256" && sha256sum -c "$name.sha256")

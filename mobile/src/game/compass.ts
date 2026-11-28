@@ -61,10 +61,13 @@ export function compassDirection(from: Coordinates, to: Coordinates): CompassDir
   return { meters, bearing: meters >= 1 ? trueBearing(from, to) : null };
 }
 
-export function compassRange(direction: CompassDirection): string {
-  const { meters, bearing } = direction;
-  const distance = meters < 1 ? "Less than 1 m"
+export function compassDistance(meters: number): string {
+  return meters < 1 ? "Less than 1 m"
     : meters < 1_000 ? Math.round(meters) + " m" : (meters / 1_000).toFixed(1) + " km";
+}
+
+export function compassRange({ meters, bearing }: CompassDirection): string {
+  const distance = compassDistance(meters);
   if (bearing === null) return distance;
   const sector = directions[Math.round(bearing / 45) % directions.length];
   return distance + " · " + sector + " " + (Math.round(bearing) % 360) + "° true";

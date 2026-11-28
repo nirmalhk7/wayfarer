@@ -730,7 +730,7 @@ function Wayfarer() {
                   trackColor={{ false: COLORS.line, true: COLORS.frame }} value={mode === "training"} />
               </View>
               {mode === "live" && <Text style={styles.testContentNoticeText}>
-                Live uses your location on this device to find your port. The first visit to a new region may require a download.
+                Live uses your location on this device to find your port.
               </Text>}
             </View>
           </>
@@ -738,23 +738,11 @@ function Wayfarer() {
 
         {tab === "compass" && (
           <View style={styles.pageBody}>
-            <SectionHeader title="Compass" />
-            <Text style={styles.receiptLine}>
-              {mode === "live" ? "Straight-line range to the nearest edge of each port."
-                : "Straight-line range from your simulated ship to each scenario."}
-            </Text>
-            <Text style={styles.receiptLine}>
-              {mode === "live" ? "Bearings use true north and give no travel directions."
-                : "Choose a scenario to simulate the approach. Do not travel to these points."}
-            </Text>
-            {mode === "live" && !compassPosition && <Text style={styles.receiptLine}>
-              Port ranges need a fresh, accurate fix and downloaded port data.
-            </Text>}
-            {mode === "training" && <Text style={styles.receiptLine}>
-              {game.discoveredPortIds.length} of {game.ports.length} scenarios visited
-            </Text>}
             <PortCompass readings={compassReadings} selectedId={mode === "training" ? selectedPort.id : undefined}
-              onSelect={mode === "training" ? plotCourse : undefined} />
+              onSelect={mode === "training" ? plotCourse : undefined}
+              emptyMessage={mode === "live" && !compassReadings.length
+                ? compassPosition ? "No nearby ports in range" : "Port ranges unavailable"
+                : undefined} />
           </View>
         )}
 

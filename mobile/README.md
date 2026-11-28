@@ -2,8 +2,7 @@
 
 Wayfarer is an Android space-trading game. In Live, every U.S. county or county
 equivalent in the 50 states and D.C. is a port. Location matching stays on the
-phone. An accurate foreground fix shows the current port. Android reuses downloaded
-regions offline. Walking detection is requested after an explicit Live start.
+phone. An accurate foreground fix shows the current port. GitHub APK previews include all port data for offline Live play. Walking detection is requested after an explicit Live start.
 If permission is denied or Android activity recognition is unavailable, the
 Compass still works and visits and markets stay locked. Use Retry Live
 navigation after changing the Android Physical activity setting.
@@ -22,8 +21,8 @@ signal clears the check. Motion and GPS fixes stay in foreground memory.
 Existing visits and campaign progress are preserved.
 
 Training opens offline with its own save. Simulate arrivals, trade, deliver
-contracts and upgrade your ship. To enable Live on a new build, see the
-[atlas hosting and replay guide](../docs/pilot-quickstart.md).
+contracts and upgrade your ship. See the
+[atlas build and replay guide](../docs/pilot-quickstart.md) for development builds.
 
 Android disables app backup and excludes databases and shared preferences from
 cloud backup and device transfer. When Training opens an old procedural save,
@@ -64,12 +63,10 @@ npm run check
 
 ## Build an APK
 
-Generate the native project after changing `app.json`, then build:
+Build the pinned national atlas first, then run the same APK script as CI from the repository root with Android SDK 36 installed:
 
 ```sh
-npx expo prebuild --platform android
-cd android
-./gradlew assembleRelease
+bash mobile/tools/build-preview-apk.sh ./outputs ./atlas-output/county2026-v2
 ```
 
 The repository's MVP APK is signed with Android's debug key for direct testing.
@@ -87,5 +84,6 @@ a prerelease tagged `android-preview-<commit SHA>`.
 Download the APK and checksum from [GitHub Releases](https://github.com/nirmalhk7/wayfarer/releases).
 These sideload previews use the pinned public Expo template debug certificate.
 Installs signed with another key need to be removed before installing the preview,
-which removes their local saves. The APK includes offline Training. Live requires
-a separate build configured with a hosted atlas.
+which removes their local saves. The APK includes offline Training and the full
+Live atlas. The build verifies the registry and every geometry tile inside the APK.
+The release ZIP contains the same verified atlas payload.

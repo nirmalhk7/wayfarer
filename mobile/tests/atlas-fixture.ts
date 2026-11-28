@@ -85,6 +85,7 @@ export function atlasFixture() {
       ranksFor: (id: string) => loader.ranksFor(id),
     },
     paths,
+    use(source: typeof loader) { loader = source; },
     restart() { loader = create(); },
     offline(value: boolean) { offline = value; },
   };
