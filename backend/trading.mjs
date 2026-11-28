@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { rankSource } from "./rank-source.mjs";
 import { createCountyCampaign, recordCountyVisit } from "../mobile/src/game/countyCampaign.ts";
 import { buyUpgrade, COMMODITIES, trade } from "../mobile/src/game/engine.ts";
 import { resolveLiveContact, rollLiveEncounter } from "../mobile/src/game/liveEncounters.ts";
 
-const ranks = new Map(readFileSync(new URL("../tools/county2026-game-ranks.tsv", import.meta.url), "utf8")
+const ranks = new Map(rankSource
   .trim().split("\n").slice(1).map((row) => {
     const [id, crime, patrol] = row.split("\t");
     return ["county:" + id, { crime: Number(crime), patrol: Number(patrol) }];

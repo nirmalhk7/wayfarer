@@ -7,3 +7,4 @@ npm-debug.log*
 /outputs/
 /work/
 /tools/__pycache__/
+/backend/.generated/

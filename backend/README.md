@@ -3,8 +3,10 @@
 Use a dedicated Vercel project linked to `nirmalhk7/wayfarer`, with `main` as
 the production branch and `backend` as the root directory. Enable inclusion
 of source files outside the root directory so the functions can import the
-shared economy and pinned ranks. Use Node.js 24 and install from
-`backend/package-lock.json`.
+shared economy and pinned ranks at build time. Use Node.js 24. The Vercel
+install command runs `npm ci --include=dev && npm run build` to package the
+shared economy and ranks inside the backend. The generated handler needs no
+sibling source files at runtime.
 
 Connect a dedicated **private** Blob store from the same Vercel team, within its
 verified free allowance. The Blob SDK uses the linked store ID and Vercel OIDC.

@@ -1,11 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
+  "installCommand": "npm ci --include=dev && npm run build",
   "rewrites": [
     { "source": "/health", "destination": "/api/health" },
     { "source": "/v1/live", "destination": "/api/live" }
-  ],
-  "functions": {
-    "api/*.mjs": { "includeFiles": "../tools/county2026-game-ranks.tsv" }
-  }
+  ]
 }
