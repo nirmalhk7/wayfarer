@@ -46,6 +46,7 @@ export type GameState = {
   consumedDockingProofIds: string[];
   dockSequence: number;
   encounter: Encounter | null;
+  pendingLiveEncounter?: Encounter;
   lastTrade?: TradeReceipt;
   delivery?: DeliveryState;
   player: PlayerState;

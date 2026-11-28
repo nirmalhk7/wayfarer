@@ -4,6 +4,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   BackHandler,
   Modal,
   Pressable,
@@ -31,6 +32,7 @@ import {
   trade,
   type Coordinates,
   type GameState,
+  type Encounter,
   type MarketQuote,
   type PriceBand,
 } from "./src/game/engine";
@@ -42,6 +44,8 @@ import {
 import { usePortArrival } from "./src/location/usePortArrival";
 import { stopLegacyPointTasks } from "./src/location/retiredPointTasks";
 import { createCountyCampaign, recordCountyVisit } from "./src/game/countyCampaign";
+import { atlas } from "./src/atlas/download";
+import { resolveLiveContact, rollLiveEncounter, type LiveContactChoice } from "./src/game/liveEncounters";
 import { nearbyPorts } from "./src/atlas/geometry";
 
 import {
@@ -308,6 +312,35 @@ export default function App() {
   );
 }
 
+function LiveContactAlert({ contact, saving, onChoice, onLater }: {
+  contact: Encounter;
+  saving: boolean;
+  onChoice: (choice: LiveContactChoice) => void;
+  onLater: () => void;
+}) {
+  const pirates = contact.type === "pirates";
+  return (
+    <Modal transparent visible onRequestClose={onLater}>
+      <ScrollView contentContainerStyle={styles.modalScrim}>
+        <View style={styles.encounterCard} accessibilityViewIsModal>
+          <Text accessibilityRole="header" style={styles.encounterTitle}>{pirates ? "Pirate contact" : "Customs patrol"}</Text>
+          <Text style={styles.encounterCopy}>
+            {pirates ? "Stopping pays the raiders' toll." : "Stopping accepts inspection and pays the inspection fee."}
+            {" "}Surrender pays a larger settlement.
+          </Text>
+          <View style={styles.encounterActions}>
+            <Button label="Evade" onPress={() => onChoice("evade")} disabled={saving} tone="ghost" />
+            <Button label="Stop" onPress={() => onChoice("stop")} disabled={saving} />
+            <Button label="Surrender" onPress={() => onChoice("surrender")} disabled={saving} tone="ghost" />
+            <Button label="Fight" onPress={() => onChoice("fight")} disabled={saving} tone="danger" />
+            <Button label="Later" onPress={onLater} disabled={saving} tone="ghost" />
+          </View>
+        </View>
+      </ScrollView>
+    </Modal>
+  );
+}
+
 function Wayfarer() {
   const initialCampaigns = useMemo<Campaigns>(() => ({
     live: createCountyCampaign(),
@@ -330,6 +363,9 @@ function Wayfarer() {
   const [resetting, setResetting] = useState(false);
   const [contractSaving, setContractSaving] = useState(false);
   const contractSavingRef = useRef(false);
+  const contactSavingRef = useRef(false);
+  const [contactSaving, setContactSaving] = useState(false);
+  const [dismissedContact, setDismissedContact] = useState<string>();
   const resetInProgress = useRef(false);
   const emptyTrainingSave = useRef<GameState | null>(null);
   const locationStatus = live.presence.status;
@@ -354,7 +390,9 @@ function Wayfarer() {
   const game = campaigns[mode];
   const livePort = live.compassPosition ? live.presence.port : null;
   const selectedPort = campaigns.training.ports.find(({ id }) => id === trainingTarget) ?? campaigns.training.ports[0];
-  const liveMarket = live.eligible && livePort
+  const pendingContact = campaigns.live.pendingLiveEncounter;
+  const safeContact = mode === "live" && live.eligible && pendingContact?.portId === livePort?.id ? pendingContact : undefined;
+  const liveMarket = live.eligible && livePort && !safeContact
     ? campaigns.live.ports.find((port) => port.id === livePort.id) ?? null
     : null;
   const dockedPort = mode === "live" ? liveMarket : activeDockedPort(game, coordinator);
@@ -432,8 +470,23 @@ function Wayfarer() {
 
   useEffect(() => {
     if (!saveReady || !livePort || !live.eligible || live.eligiblePortId() !== livePort.id) return;
-    setCampaigns((current) => updateCampaign(current, "live", (game) => recordCountyVisit(game, livePort)));
-  }, [livePort, live.eligible, saveReady]);
+    if (campaignsRef.current.live.discoveredPortIds.includes(livePort.id)) {
+      setCampaigns((current) => updateCampaign(current, "live", (game) => recordCountyVisit(game, livePort)));
+      return;
+    }
+    let cancelled = false;
+    void atlas.ranksFor(livePort.id).then((ranks) => {
+      if (cancelled || resetInProgress.current || contactSavingRef.current || live.eligiblePortId() !== livePort.id) return;
+      setCampaigns((current) => updateCampaign(current, "live", (game) => {
+        const first = !game.discoveredPortIds.includes(livePort.id);
+        const next = recordCountyVisit(game, livePort);
+        if (!first || game.pendingLiveEncounter) return next;
+        const contact = rollLiveEncounter(game.seed, livePort.id, ranks);
+        return contact ? { ...next, pendingLiveEncounter: contact } : next;
+      }));
+    });
+    return () => { cancelled = true; };
+  }, [livePort, live.eligible, saveReady, contactSaving]);
 
   const liveCampaign = campaigns.live;
   const trainingCampaign = campaigns.training;
@@ -450,7 +503,7 @@ function Wayfarer() {
   }, [trainingCampaign, saveReady]);
 
   async function resetCampaign() {
-    if (!resetMode || resetInProgress.current || contractSavingRef.current) return;
+    if (!resetMode || resetInProgress.current || contractSavingRef.current || contactSavingRef.current) return;
     const target = resetMode;
     resetInProgress.current = true;
     setResetting(true);
@@ -478,7 +531,7 @@ function Wayfarer() {
 
   function mutate(action: (current: GameState) => GameState, success: string) {
     if (resetInProgress.current || contractSavingRef.current) return;
-    if (mode === "live" && !live.eligiblePortId()) return;
+    if (mode === "live" && (!live.eligiblePortId() || safeContact || contactSavingRef.current)) return;
     try {
       const base = campaignsRef.current[mode];
       const updated = action(base);
@@ -562,6 +615,29 @@ function Wayfarer() {
     );
   }
 
+  async function chooseLiveContact(contact: Encounter, choice: LiveContactChoice) {
+    if (mode !== "live" || AppState.currentState !== "active" || resetInProgress.current || contactSavingRef.current
+      || live.eligiblePortId() !== contact.portId) return;
+    const current = campaignsRef.current.live;
+    if (current.pendingLiveEncounter !== contact) return;
+    const next = resolveLiveContact(current, contact.portId, choice);
+    if (next === current) return;
+    contactSavingRef.current = true;
+    setContactSaving(true);
+    try {
+      await liveSaveQueue.current.writeThrough(next);
+      campaignsRef.current = { ...campaignsRef.current, live: next };
+      setCampaigns((previous) => ({ ...previous, live: next }));
+      setDismissedContact(undefined);
+      setNotice("CONTACT RESOLVED · " + choice.toUpperCase());
+    } catch {
+      setNotice("CONTACT COULD NOT BE SAVED · TRY AGAIN");
+    } finally {
+      contactSavingRef.current = false;
+      setContactSaving(false);
+    }
+  }
+
   function handleEncounter(choice: "run" | "pay" | "fight" | "help") {
     mutate((current) => resolveEncounter(current, choice), `CONTACT RESOLVED · ${choice.toUpperCase()}`);
   }
@@ -605,7 +681,9 @@ function Wayfarer() {
                 : [selectedPort.callsign, trainingPlace ? placeName(trainingPlace) : null, berthed ? "Docked" : "Approach · " + formatDistance(selectedDistance)]
                   .filter(Boolean).join(" · ")}
             >
-              {berthed ? (
+              {safeContact ? (
+                <Button label="Open encounter alert" onPress={() => setDismissedContact(undefined)} />
+              ) : berthed ? (
                 <Button label="Enter station market" onPress={() => {
                   setStationPanel("contracts");
                   setTab("market");
@@ -858,6 +936,11 @@ function Wayfarer() {
         </ScrollView>
       </Modal>
       <EncounterModal game={game} onResolve={handleEncounter} />
+      {safeContact && dismissedContact !== safeContact.portId && <LiveContactAlert
+        contact={safeContact} saving={contactSaving}
+        onChoice={(choice) => { void chooseLiveContact(safeContact, choice); }}
+        onLater={() => { if (!contactSavingRef.current) setDismissedContact(safeContact.portId); }}
+      />}
     </SafeAreaView>
   );
 }

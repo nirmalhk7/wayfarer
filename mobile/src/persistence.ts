@@ -328,6 +328,10 @@ function readGameState(value: unknown): GameState | null {
     return null;
   }
   if (encounter && encounter.portId !== dockedPortId) return null;
+  const pending = value.pendingLiveEncounter === undefined
+    ? undefined : readEncounter(value.pendingLiveEncounter, portIds);
+  if (value.pendingLiveEncounter !== undefined
+    && (!county || !pending || pending.type === "distress" || !discoveredPortIds.includes(pending.portId))) return null;
   const lastTrade = readTradeReceipt(value.lastTrade, portIds);
   if (value.lastTrade !== undefined && (!lastTrade || !revealedMarketIds.includes(lastTrade.portId))) return null;
   const delivery = readDelivery(value.delivery, player);
@@ -345,6 +349,7 @@ function readGameState(value: unknown): GameState | null {
     consumedDockingProofIds,
     dockSequence,
     encounter,
+    ...(pending ? { pendingLiveEncounter: pending } : {}),
     ...(lastTrade ? { lastTrade } : {}),
     ...(delivery ? { delivery } : {}),
     player,

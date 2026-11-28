@@ -37,6 +37,7 @@ function synthetic() {
     "-123_37": document("-123_37", [-123.25, 36.75, -121.75, 38.25], [
       rectangle("county:06081", "San Mateo", [-122.64, 37.1, -122.15, 37.708333]),
       rectangle("county:06075", "San Francisco", [-122.64, 37.708333, -122.15, 37.84]),
+      rectangle("county:06001", "Alameda", [-122.14, 37.52, -121.75, 37.84]),
     ]),
     "-125_40": document("-125_40", [-125.25, 39.75, -123.75, 41.25], [
       rectangle("county:06023", "Humboldt", [-124.5, 40.25, -123.8, 41.2]),
@@ -65,6 +66,7 @@ export function atlasFixture() {
         paths.push(path);
         if (offline) throw new Error("Offline");
         if (path === "index.json") return index;
+        if (sourceDir && path === "counties.json") return readFileSync(join(sourceDir, path), "utf8");
         if (sourceDir) return gunzipSync(readFileSync(join(sourceDir, path + ".gz"))).toString();
         const key = path.slice(6, -5);
         if (!fallback[key]) throw new Error("Missing region");
@@ -74,7 +76,11 @@ export function atlasFixture() {
   }
   let loader = create();
   return {
-    atlas: { load: (key: string) => loader.load(key), peek: (key: string) => loader.peek(key) },
+    atlas: {
+      load: (key: string) => loader.load(key),
+      peek: (key: string) => loader.peek(key),
+      ranksFor: (id: string) => loader.ranksFor(id),
+    },
     paths,
     restart() { loader = create(); },
     offline(value: boolean) { offline = value; },

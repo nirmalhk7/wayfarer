@@ -8,6 +8,7 @@ import * as TaskManager from "expo-task-manager";
 import { AccessibilityInfo, Animated, AppState, Share } from "react-native";
 
 import "../index";
+import { resolveLiveContact, type LiveContactChoice } from "../src/game/liveEncounters";
 import { createGame } from "../src/game/engine";
 import { decodeGameState, encodeGameState, LEGACY_STORAGE_KEY, LIVE_RESET_MARKER, COUNTY_LIVE_STORAGE_KEY, storageKeyForMode } from "../src/persistence";
 import { createDockingCoordinator } from "../src/ui/dockingCoordinator";
@@ -527,7 +528,7 @@ test("Live reports drive-throughs, credits walking only and restores visits offl
   expect(screen.getByText("Location fix expired")).toBeTruthy();
   expect(await AsyncStorage.getItem(storageKeyForMode("live"))).toEqual(archive);
   expect(network).not.toHaveBeenCalled();
-  expect(downloaded.paths.every((path) => /^(?:index\.json|tiles\/-?\d+_-?\d+\.json)$/.test(path))).toBe(true);
+  expect(downloaded.paths.every((path) => /^(?:(?:index|counties)\.json|tiles\/-?\d+_-?\d+\.json)$/.test(path))).toBe(true);
 
   await mounted.unmount();
   expect(remove).toHaveBeenCalledTimes(1);
@@ -560,4 +561,134 @@ test("Live reports drive-throughs, credits walking only and restores visits offl
   } finally {
     downloaded.offline(false);
   }
+});
+
+const contacts = [
+  { type: "pirates", portId: "county:06001", name: "Alameda", title: "Pirate contact",
+    point: { latitude: 37.68, longitude: -121.80 }, ranks: { crime: 6, patrol: 6 } },
+  { type: "customs", portId: "county:06075", name: "San Francisco", title: "Customs patrol",
+    point: { latitude: 37.7599, longitude: -122.4384 }, ranks: { crime: 6, patrol: 7 } },
+] as const;
+
+test.each(contacts.flatMap((contact) => (["Evade", "Stop", "Surrender", "Fight"] as const)
+  .map((choice) => ({ ...contact, choice }))))("$title: $choice is accepted once after walking", async (fixture) => {
+  const [[RegisteredApp]] = jest.mocked(registerRootComponent).mock.calls;
+  const rankReads = jest.spyOn(downloaded.atlas, "ranksFor").mockResolvedValue(fixture.ranks);
+  downloaded.restart();
+  downloaded.offline(false);
+  let now = 2_000_000;
+  jest.spyOn(Date, "now").mockImplementation(() => now);
+  const gps = (point: { latitude: number; longitude: number } = fixture.point, speed = 0): Location.LocationObject => ({
+    coords: { ...point, accuracy: 5, speed, altitude: null, altitudeAccuracy: null, heading: null },
+    timestamp: now,
+  });
+  let location: Location.LocationCallback;
+  let motion: Location.MotionActivityCallback;
+  const pushMotion = async (kind: string, timestamp = now) => {
+    const activities = Object.fromEntries(["automotive", "cycling", "running", "walking", "stationary", "unknown"]
+      .map((key) => [key, { detected: key === kind, confidence: key === kind ? 2 : 0 }])) as Location.MotionActivityObject["activities"];
+    await act(async () => motion({ activities, timestamp }));
+  };
+  function allow(request = true) {
+    if (request) jest.mocked(Location.requestForegroundPermissionsAsync).mockResolvedValueOnce({
+      ...mockMotionGrant, status: Location.PermissionStatus.GRANTED,
+    });
+    jest.mocked(Location.watchPositionAsync).mockImplementationOnce(async (_options, callback) => {
+      location = callback;
+      return { remove() {} };
+    });
+    jest.mocked(Location.getCurrentPositionAsync).mockResolvedValueOnce(gps(fixture.point, 20));
+    jest.mocked(Location.watchMotionActivityAsync).mockImplementationOnce(async (callback) => {
+      motion = callback;
+      return { remove() {} };
+    });
+  }
+  async function open() {
+    const mounted = await render(<RegisteredApp />);
+    await fireEvent(await screen.findByRole("switch", { name: "Training simulator" }), "valueChange", false);
+    allow();
+    await press("Start live navigation");
+    await screen.findByRole("header", { name: fixture.name });
+    await screen.findByText("Walk inside this port to log a visit and unlock its market");
+    return mounted;
+  }
+  async function qualify() {
+    now += 31_000;
+    for (let sample = 0; sample <= 4; sample++) {
+      now += 5_000;
+      await pushMotion("walking");
+      await act(async () => location(gps({ ...fixture.point, latitude: fixture.point.latitude + sample * .000068 }, 1.5)));
+    }
+  }
+
+  let appStateListener: ((state: typeof AppState.currentState) => void) | undefined;
+  if (fixture.type === "pirates" && fixture.choice === "Stop") {
+    jest.spyOn(AppState, "addEventListener").mockImplementation((event, listener) => {
+      if (event === "change") appStateListener = listener;
+      return { remove() {} };
+    });
+  }
+  const mounted = await open();
+  await pushMotion("automotive");
+  expect(screen.queryByRole("header", { name: fixture.title })).toBeNull();
+  expect(await campaign("live")).toBeNull();
+  await qualify();
+  await screen.findByRole("header", { name: fixture.title });
+  await waitFor(async () => expect((await campaign("live"))?.pendingLiveEncounter?.type).toBe(fixture.type));
+  const pending = (await campaign("live"))!;
+  expect(rankReads).toHaveBeenCalledTimes(1);
+  await act(async () => location(gps()));
+  expect(rankReads).toHaveBeenCalledTimes(1);
+  await press("Later");
+  expect(screen.queryByRole("header", { name: fixture.title })).toBeNull();
+  await press("Open encounter alert");
+  if (appStateListener) {
+    await act(async () => {
+      AppState.currentState = "background";
+      appStateListener!("background");
+    });
+    expect(screen.queryByRole("header", { name: fixture.title })).toBeNull();
+    expect((await campaign("live"))?.pendingLiveEncounter).toEqual(pending.pendingLiveEncounter);
+    now += 1_000;
+    allow(false);
+    await act(async () => {
+      AppState.currentState = "active";
+      appStateListener!("active");
+    });
+    expect(screen.queryByRole("header", { name: fixture.title })).toBeNull();
+    await qualify();
+    await screen.findByRole("header", { name: fixture.title });
+    expect(rankReads).toHaveBeenCalledTimes(1);
+  }
+
+  now += 1_000;
+  await pushMotion("automotive");
+  await act(async () => location(gps(fixture.point, 18)));
+  expect(screen.queryByRole("button", { name: fixture.choice })).toBeNull();
+  expect((await campaign("live"))?.pendingLiveEncounter).toEqual(pending.pendingLiveEncounter);
+  await mounted.unmount();
+
+  await open();
+  expect(screen.queryByRole("header", { name: fixture.title })).toBeNull();
+  await qualify();
+  await screen.findByRole("header", { name: fixture.title });
+  const setItem = jest.mocked(AsyncStorage.setItem);
+  const save = setItem.getMockImplementation()!;
+  let finishSave!: () => void;
+  setItem.mockImplementationOnce(async (key, value) => {
+    await new Promise<void>((resolve) => { finishSave = resolve; });
+    return save(key, value);
+  });
+  const selected = screen.getByRole("button", { name: fixture.choice });
+  await fireEvent.press(selected);
+  expect(screen.getByRole("button", { name: fixture.choice }).props.accessibilityState.disabled).toBe(true);
+  await fireEvent.press(selected);
+  await act(async () => { finishSave(); });
+  const writes = setItem.mock.calls.filter(([key]) => key === COUNTY_LIVE_STORAGE_KEY);
+  expect(writes.some(([, value]) => decodeGameState(value, "county-live")?.pendingLiveEncounter)).toBe(true);
+  await screen.findByText("CONTACT RESOLVED · " + fixture.choice.toUpperCase());
+  const expected = resolveLiveContact(pending, fixture.portId, fixture.choice.toLowerCase() as LiveContactChoice);
+  await waitFor(async () => expect(await campaign("live")).toEqual(expected));
+  expect(screen.queryByRole("header", { name: fixture.title })).toBeNull();
+  expect(rankReads).toHaveBeenCalledTimes(1);
 });

@@ -30,6 +30,22 @@ cloud backup and device transfer. When Training opens an old procedural save,
 it replaces the old coordinates with a fixed simulated origin and preserves
 ship progress and market state.
 
+## Live encounters
+
+A port can roll one fictional encounter on the first qualified walking visit.
+The roll is stable for a campaign and port, with higher crime increasing pirate
+odds and higher patrol increasing customs odds while modestly deterring pirates.
+The verified v2 registry supplies the two gameplay ranks. Unranked ports and
+unavailable or invalid rank data keep the legacy no-contact behavior. Already
+logged visits do not reroll. Training keeps its existing docking encounters.
+
+The game holds one pending Live alert at a time. It appears at its own port
+during a qualified foreground visit. You can reopen a deferred alert from the
+Bridge. Evade risks cargo or hull, Fight trades hull for credits, Stop pays a
+pirate toll or customs inspection fee, and Surrender pays a larger settlement.
+A saved resolution clears the pending alert. If a contact is already pending,
+other visits can be logged without generating a second contact.
+
 ## Run during development
 
 ```sh
